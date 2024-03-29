@@ -1,0 +1,3 @@
+# use Python 3.6+
+torch
+torch-geometric
