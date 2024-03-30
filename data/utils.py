@@ -68,7 +68,6 @@ def kruskals(
     
     return mst_edges, non_mst_edges
 
-
 class DatasetWrapper(Dataset):
     def __init__(self, data_lst: List[Data]) -> None:
         self.data_lst = data_lst
@@ -88,9 +87,44 @@ class SubgraphLoader:
         self.k = k
         self.subgraph_dataset = None
         self.superset_dataset = None
+    
+    def _compute_node_centralities(
+            self,
+            adj_mat: List[List[int]],
+        ) -> List[int]:
+        '''Computes a centrality score for each node in the graph. This is based on the 
+        degree of nodes.
+
+        Arguments:
+        adj_mat: an adjacency matrix for a graph
+        '''
+
+        return [sum(n) for n in adj_mat]
+    
+    def _compute_edge_centralities(
+            self,
+            adj_mat: List[List[int]],
+        ) -> Dict[Tuple[int, int], float]:
+        '''Computes a centrality score for each edge in the graph. This is based on the
+        average centrality of the endpoints in an undirected graph or the centrality of the head
+        of the edge in an directed graph.
+
+        Arguments:
+        adj_mat: an adjacency matrix for a graph
+        '''
+
+        edge_centralities = dict()
+
+        for n, neighbors in enumerate(adj_mat):
+            for n2 in neighbors:
+                e = tuple(sorted([n, n2]))
+                edge_centralities[e] = edge_centralities.get(e, 0) + 0.5
+        
+        return edge_centralities
 
     def _perturb_features(
-            graph: Dict[int, List[int]],
+            self,
+            adj_mat: List[List[int]],
             features: torch.Tensor,
             positive: bool,
             p_f: float,
@@ -100,19 +134,20 @@ class SubgraphLoader:
         dimension is determined using degree centrality.
 
         Arguments:
-        graph: a graph
+        adj_mat: an adjacency matrix for a graph
         feature: the node features of the graph
         positive: whether to create a positive or negative training sample perturbation
         p_f: a hyperparameter for controlling the degree of perturbation
         p_t: maximum probability for masking an entry in a feature vector
         '''
 
-        # degree centralities
-        centralities = [len(graph[n]) for n in graph]
+        # record centralities as a n x 1 tensor
+        centralities = self._compute_node_centralities(adj_mat)
+        centralities = torch.tensor(centralities).unsqueeze(1)
 
-        # `weights` is a 1 x m tensor
-        col_wise_sum = torch.abs(features.sum(dim=0))
-        weights = col_wise_sum * centralities
+        # n x m -> 1 x m tensor
+        weights = torch.abs((centralities * features).sum(dim=0))
+
         max_weight = weights.max().item()
 
         # use log the avoid heavily perturbing nodes w/ dense connections
@@ -126,172 +161,146 @@ class SubgraphLoader:
         probs = probs if positive else 1 - probs
 
         # apply salt and pepper noise
-        rand_matrix = torch.randn(features.size())
-        mask = rand_matrix >= probs
-        features *= mask
+        mask = torch.randn(features.size()) >= probs
+        perturbed_features = features * mask
 
-        return features
+        return perturbed_features
 
     def _perturb_topology(
-            graph: Dict[int, List[int]], 
+            self,
+            adj_mat: List[List[int]], 
             positive: bool,
             p_e: float,
             p_t: float,
-        ) -> Dict[int, List[int]]:
+        ) -> List[List[int]]:
         '''
         Generates a perturbed view of the graph, based on degree centrality,
         for positive or negative training samples.
 
         Arguments:
-        graph: a graph
+        adj_mat: an adjacency matrix for a graph
         positive: whether to create a positive or negative training sample perturbation
         p_e: a hyperparameter for controlling the degree of perturbation
         p_t: maximum probability for deleting an edge
         '''
 
-        # key = ordered tuple (by nodes)
-        # value = weight (average degree centrality of endpoints)
-        max_weight = None
-        edge_weights = dict()
-        for n1 in graph:
-            for n2 in graph.get(n1):
-                e = sorted([n1, n2])
-                w = edge_weights.get(e, 0)
-                w += len(graph.get(n1)) # add the degree
-                edge_weights[e] = w
-
-                # we need to store the maximum weight for normalization (later on)
-                if max_weight == None:
-                    max_weight = w
-                else:
-                    max_weight = max(max_weight, w)
-
-        for e in edge_weights:
+        edge_centralities = self._compute_edge_centralities(adj_mat)
+        max_weight = max([edge_centralities[e] for e in edge_centralities])
+        edges = []
+        for e in edge_centralities:
             # using log alleviates the impact of nodes w/ heavily dense connections
-            w = math.log(edge_weights[e] / 2)
+            w = math.log(edge_centralities[e])
 
             # normalize (truncates to p_t to prevent the perturbation from being too heavy)
             normalized_w = min(((max_weight - w) * p_e) / max_weight, p_t)
             normalized_w = normalized_w if positive else 1 - normalized_w
 
-            edge_weights[w] = normalized_w
+            edges.append((normalized_w, e[0], e[1]))
         
         # MST using Kruskal's algorithm
-        # flatten the edges into a list where each entry is formatted as (weight, tail, head)
-        edges = []
-        for e in edge_weights:
-            edges.append([edge_weights[e], e[0], e[1]])
-        
         mst_edges, non_mst_edges = kruskals(edges)
-        
+
+        # add back non_mst_edges with probabilities equal to their 1 - weights
+        # (ie. lower probability -> should be added with greater liklihood)
         final_edges = mst_edges
-        # add back non_mst_edges with probabilities equal to their weights
         for e in non_mst_edges:
-            p = random.random()
-            if p >= e[0]: # lower probability -> should be added with greater liklihood
+            if random.random() >= e[0]:
                 final_edges.append(e)
         
         # transform back into a dictionary graph
-        perturbed_graph = dict()
+        perturbed_graph = [[] for _ in range(len(adj_mat))]
+
         for e in final_edges:
-            n1 = perturbed_graph.get(e[1], [])
-            n2 = perturbed_graph.get(e[2], [])
-            n1.append(e[2])
-            n2.append(e[1])
-            perturbed_graph[e[1]] = n1
-            perturbed_graph[e[2]] = n2
+            _, n, n2 = e
+            perturbed_graph[n].append(n2)
+
+            # check if the edge is bidirectional (ie. if the graph is undirected)
+            if n in adj_mat[n2]:
+                perturbed_graph[n2].append(n)
                 
         return perturbed_graph
 
-    def _torch_graph_to_adj_dict(
+    def _graph_to_adj_mat(
             self, 
             graph: Data,
-        ) -> Dict[int, List[int]]:
+        ) -> List[List[int]]:
         '''
-        Converts a PyTorch Geo graph into an adjacency dictionary.
+        Converts a PyTorch Geo graph into an adjacency matrix.
 
         Arguments:
         graph: a PyTorch Geo graph
         '''
-        # TODO
 
-        adj_dict = dict()
-        for i in range(graph.edge_index.size(1)):
-            head, tail = graph.edge_index[:, 1]
-            head, tail = int(head.item()), int(tail.item())
+        adj_mat = [[] for _ in range(graph.x.size(0))]
 
-            neighbors = adj_dict.get(head, [])
-            neighbors.append(tail)
-            adj_dict[head] = neighbors
+        for i in range(graph.edge_index.size(1)): # iterate over each edge
+            tail, head = graph.edge_index[:, 1]
+            tail, head = int(head.item()), int(tail.item())
+            adj_mat[tail].append(head)
 
-        return adj_dict
+        return adj_mat
 
-    def _adj_dict_to_tensor(
+    def _adj_mat_to_graph(
             self, 
             x: torch.Tensor,
-            adj_dict: Dict[int, List[int]],
+            adj_mat: List[List[int]],
         ) -> Data:
-        '''Converts an adjacency dictionary into a torch tensor (stored in the `edge_index`
-        field of a PyTorch geo data object).
+        '''Converts an adjacency matrix into a PyTorch Geo graph.
 
         Arguments:
-        adj_dict: an adjacency dictionary
+        x: node features tensor
+        adj_mat: an adjacency matrix
         '''
 
-        # TODO
-        num_edges = sum(len(edges) for edges in adj_dict.values())
+        num_edges = sum(len(neighbors) for neighbors in adj_mat)
         edge_index = torch.tensor(2, num_edges)
 
         idx = 0
-        nodes = set()
-        for head in adj_dict:
-            nodes.add(head)
-            for tail in adj_dict[head]:
-                edge_index[0][idx] = head
-                edge_index[1][idx] = tail
+        for tail, neighbors in enumerate(adj_mat):
+            for head in neighbors:
+                edge_index[0][idx] = tail
+                edge_index[1][idx] = head
                 idx += 1
-                nodes.add(tail)
-        
-        idxs = torch.Tensor(list(nodes))
 
-        return Data(x=x[idxs], edge_index=edge_index)
+        return Data(x=x, edge_index=edge_index)
     
     def _bfs(
             self, 
             start: int,
             graph: Data,
-        ) -> Tuple[Dict[int, List[int]], torch.Tensor]:
+            adj_mat: List[List[int]],
+        ) -> Tuple[List[List[int]], torch.Tensor]:
         '''Returns the subgraph, with a maximum depth of self.k, centered at the `start` node.
 
         Arguments:
         start: the starting node
         graph: a PyTorch Geo graph
+        adj_mat: adjacency matrix of the graph
         '''
         q = Queue()
-        visited = set()
+        mapping = dict()
         q.put((start, 0))
+        counter = 0
 
         while len(q) > 0:
             n, ply = q.get()
 
-            if n in visited or ply > self.k:
+            if n in mapping or ply > self.k:
                 continue
 
-            visited.add(n)
-            for neighbor in graph.get(n):
+            mapping[n] = counter
+            counter += 1
+
+            for neighbor in adj_mat[n]:
                 q.put((neighbor, ply+1))
         
-        subgraph = dict()
-        for n in visited:
-            subgraph_neighbors = []
-            for neighbor in graph.get(n):
-                if neighbor in visited:
-                    subgraph_neighbors.append(n)
-            
-            subgraph[n] = subgraph_neighbors
+        subgraph = [[] for _ in range(len(mapping))]
+        for n in mapping:
+            for neighbor in adj_mat[n]:
+                if neighbor in mapping:
+                    subgraph[mapping[n]] = mapping[neighbor]
         
-        idxs = torch.Tensor(list(visited))
-        
+        idxs = torch.Tensor(sorted(list(mapping.keys())))
         return subgraph, graph.x[idxs]
 
     def generate_samples(
@@ -316,23 +325,23 @@ class SubgraphLoader:
 
         for g in self.graphs:
 
-            adj_dict = self._torch_graph_to_adj_dict(g)
+            adj_mat = self._graph_to_adj_mat(g)
 
             size = g.size(0)
             nodes = list(range(n))
-            rand_nodes = random.sample(nodes, min(size,max_subgraphs))
+            rand_nodes = random.sample(nodes, min(size, max_subgraphs))
 
             for n in rand_nodes:
-                sub_adj_dict, features = self._bfs(n, adj_dict)
-                perturbed_topology = self._perturb_topology(sub_adj_dict, positive, p_e, p_t)
-                perturbed_features = self._perturb_features(sub_adj_dict, features, positive, p_f, p_t)
+                sub_adj_mat, features = self._bfs(n, g, adj_mat)
+                perturbed_sub_adj_mat = self._perturb_topology(sub_adj_mat, positive, p_e, p_t)
+                perturbed_features = self._perturb_features(sub_adj_mat, features, positive, p_f, p_t)
 
                 # add to the datasets
                 data_subgraphs.append(
-                    self._adj_dict_to_tensor(perturbed_features, perturbed_topology)
+                    self._adj_mat_to_graph(perturbed_features, perturbed_sub_adj_mat)
                 )
                 data_supersets.append(
-                    self._adj_dict_to_tensor(features, sub_adj_dict)
+                    self._adj_mat_to_graph(features, sub_adj_mat)
                 )
         
         self.subgraph_dataset = DatasetWrapper(data_subgraphs)
