@@ -67,6 +67,17 @@ def kruskals(
             non_mst_edges.append(e)
     
     return mst_edges, non_mst_edges
+
+
+class DatasetWrapper(Dataset):
+    def __init__(self, data_lst: List[Data]) -> None:
+        self.data_lst = data_lst
+    
+    def __len__(self) -> int:
+        return len(self.data_lst)
+    
+    def __getitem__(self, idx: int) -> Data:
+        return self.data_lst[idx]
         
 class SubgraphLoader:
     '''
@@ -77,7 +88,6 @@ class SubgraphLoader:
         self.k = k
         self.subgraph_dataset = None
         self.superset_dataset = None
-        self.mapping = None
 
     def _perturb_features(
             graph: Dict[int, List[int]],
@@ -214,10 +224,11 @@ class SubgraphLoader:
             neighbors.append(tail)
             adj_dict[head] = neighbors
 
-        return graph.x, adj_dict
+        return adj_dict
 
     def _adj_dict_to_tensor(
             self, 
+            x: torch.Tensor,
             adj_dict: Dict[int, List[int]],
         ) -> Data:
         '''Converts an adjacency dictionary into a torch tensor (stored in the `edge_index`
@@ -232,23 +243,29 @@ class SubgraphLoader:
         edge_index = torch.tensor(2, num_edges)
 
         idx = 0
+        nodes = set()
         for head in adj_dict:
+            nodes.add(head)
             for tail in adj_dict[head]:
                 edge_index[0][idx] = head
                 edge_index[1][idx] = tail
                 idx += 1
+                nodes.add(tail)
+        
+        idxs = torch.Tensor(list(nodes))
 
-        return edge_index
+        return Data(x=x[idxs], edge_index=edge_index)
     
-    def _bfs(self, 
+    def _bfs(
+            self, 
             start: int,
-            graph: Dict[int, List[int]],
-        ) -> Dict[int, List[int]]:
+            graph: Data,
+        ) -> Tuple[Dict[int, List[int]], torch.Tensor]:
         '''Returns the subgraph, with a maximum depth of self.k, centered at the `start` node.
 
         Arguments:
         start: the starting node
-        graph: a graph
+        graph: a PyTorch Geo graph
         '''
         q = Queue()
         visited = set()
@@ -273,38 +290,52 @@ class SubgraphLoader:
             
             subgraph[n] = subgraph_neighbors
         
-        return subgraph
+        idxs = torch.Tensor(list(visited))
+        
+        return subgraph, graph.x[idxs]
 
     def generate_samples(
             self, 
-            max_positive_subgraphs: int,
-            max_negative_subgraphs: int,
+            max_subgraphs: int,
+            positive: bool,
             p_f: float,
             p_e: float,
             p_t: float,
-        ) -> Tuple[Dataset, Dataset, List[Tuple[int, int]]]:
-        '''Generates positive and negative training samples; returns a loader for subgraphs, a loader
-        for superset graphs, and a mapping from subgraph to superset nodes (by index).
+        ) -> Tuple[Dataset, Dataset]:
+        '''Generates positive and negative training samples; returns a dataset for subgraphs, 
+        and a dataset for superset graphs.
         
         Arguments:
-        max_positive_subgraphs: max umber of positive samples for each graph
+        max_positive_subgraphs: max number of positive samples for each graph
         max_negative_subgraphs: max number of negative samples for each graph
         p_f, p_e, p_t: hyperparameters for perturbation step
         '''
 
+        data_subgraphs = []
+        data_supersets = []
+
         for g in self.graphs:
-            # TODO:
-            # Generate a positive sample:
-            # 1. select an arbitrary node in g
-            # 2. run a random BFS traversal from that node
-            # 3. perturb the subgraph (w/ positive=True) and add it to the dataset
-            # make sure to perturb the topology and node features!
 
-            # Generate a negative sample:
-            # 1. select an arbitrary node in g
-            # 2. run a random BFS traversal from that node
-            # 3. perturb the subgraph (w/ positive=False) and add it to the dataset
-            # make sure to perturb the topology and node features!
+            adj_dict = self._torch_graph_to_adj_dict(g)
 
-            # don't forget to update self.subgraph_dataset, self.superset_dataset, and self.mapping
-            pass
+            size = g.size(0)
+            nodes = list(range(n))
+            rand_nodes = random.sample(nodes, min(size,max_subgraphs))
+
+            for n in rand_nodes:
+                sub_adj_dict, features = self._bfs(n, adj_dict)
+                perturbed_topology = self._perturb_topology(sub_adj_dict, positive, p_e, p_t)
+                perturbed_features = self._perturb_features(sub_adj_dict, features, positive, p_f, p_t)
+
+                # add to the datasets
+                data_subgraphs.append(
+                    self._adj_dict_to_tensor(perturbed_features, perturbed_topology)
+                )
+                data_supersets.append(
+                    self._adj_dict_to_tensor(features, sub_adj_dict)
+                )
+        
+        self.subgraph_dataset = DatasetWrapper(data_subgraphs)
+        self.superset_dataset = DatasetWrapper(data_supersets)
+
+        return self.subgraph_dataset, self.superset_dataset
