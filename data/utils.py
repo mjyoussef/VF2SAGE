@@ -5,19 +5,24 @@ from torch_geometric.datasets import PPI, WordNet18RR
 from torch_geometric.loader import DataLoader
 import math
 import random
+from queue import Queue
 
 class UnionFind:
+    '''UnionFind data structure for Kruskal's algorithm.'''
     def __init__(self, num_vertices: int) -> None:
         self.parent = [i for i in range(num_vertices)]
         self.rank = [0] * num_vertices
     
-    def find(self, x):
+    def find(self, x: int) -> int:
+        '''Returns the parent (aka representative) vertex of the subgraph
+        that node x is part of.'''
         if self.parent[x] != x:
             self.parent[x] = self.find(self.parent[x])
         
         return self.parent[x]
     
-    def union(self, x, y):
+    def union(self, x: int, y: int) -> None:
+        '''Merges the subgraphs that nodes x and y are part of.'''
         root_x, root_y = self.find(x), self.find(y)
         if root_x == root_y:
             return
@@ -34,6 +39,13 @@ def kruskals(
         edges: List[Tuple[float, int, int]],
         num_vertices,
     ) -> Tuple[List[Tuple[float, int, int]], List[Tuple[float, int, int]]]:
+    '''Kruskal's algorithm for computing a minimum spanning tree (MST); returns the list
+    of edges in the MST and NOT in the MST
+    
+    Arguments:
+    edges: a list of edges represented as tuples consisting of weight, tail, head
+    num_vertices: the number of vertices in the graph
+    '''
 
     mst_edges = []
     non_mst_edges = []
@@ -96,7 +108,6 @@ class SubgraphLoader:
             edge_weights[w] = normalized_w
         
         # MST using Kruskal's algorithm
-        
         # flatten the edges into a list where each entry is formatted as (weight, tail, head)
         edges = []
         for e in edge_weights:
@@ -135,6 +146,43 @@ class SubgraphLoader:
         ) -> Data:
         pass
     
+    def _bfs(self, 
+            start: int,
+            graph: Dict[int, List[int]], 
+            depth: int
+        ) -> Dict[int, List[int]]:
+        '''Returns the subgraph, with a maximum depth, centered at the `start` node.
+
+        Arguments:
+        start: the starting node
+        graph: the graph
+        depth: maximum depth for BFS traversal
+        '''
+        q = Queue()
+        visited = set()
+        q.put((start, 0))
+
+        while len(q) > 0:
+            n, ply = q.get()
+
+            if n in visited or ply > depth:
+                continue
+
+            visited.add(n)
+            for neighbor in graph.get(n):
+                q.put((neighbor, ply+1))
+        
+        subgraph = dict()
+        for n in visited:
+            subgraph_neighbors = []
+            for neighbor in graph.get(n):
+                if neighbor in visited:
+                    subgraph_neighbors.append(n)
+            
+            subgraph[n] = subgraph_neighbors
+        
+        return subgraph
+
     def generate_samples(
             self, 
             positive_subgraphs: int,
@@ -163,8 +211,8 @@ class SubgraphLoader:
         dataset = []
         for g in self.graphs:
             g_dict = self._store_torch_graph_as_dict(g)
-            subgraph_dict = {}
-
+            subgraph_dict = None
+            pass
 
     def generate_negative_samples(
             self, 
