@@ -68,8 +68,41 @@ class SubgraphLoader:
     def __init__(self, graphs: Dataset, k: int) -> None:
         self.graphs = graphs
         self.k = k
-    
-    def _perturb_graph(
+
+    def _perturb_features(
+            graph: Dict[int, List[int]],
+            features: torch.Tensor,
+            positive: bool,
+            p_f: float,
+            p_t: float,
+        ) -> torch.Tensor:
+
+        # degree centralities
+        centralities = [len(graph[n]) for n in graph]
+
+        # `weights` is a 1 x m tensor
+        col_wise_sum = torch.abs(features.sum(dim=0))
+        weights = col_wise_sum * centralities
+        max_weight = weights.max().item()
+
+        # use log the avoid heavily perturbing nodes w/ dense connections
+        weights = torch.log(weights)
+
+        # normalize the weights
+        probs = ((max_weight - weights) / max_weight) * p_f
+        probs = torch.min(probs, p_t)
+
+        # negate if positive = False
+        probs = probs if positive else 1 - probs
+
+        # apply salt and pepper noise
+        rand_matrix = torch.randn(features.size())
+        mask = rand_matrix >= probs
+        features *= mask
+
+        return features
+
+    def _perturb_topology(
             graph: Dict[int, List[int]], 
             positive: bool,
             p_e: float,
@@ -78,6 +111,12 @@ class SubgraphLoader:
         '''
         Generates a perturbed view of the graph, based on degree centrality,
         for positive or negative training samples.
+
+        Arguments:
+        graph: the graph
+        positive: whether to generate a perturbation for a positive or negative sample
+        p_e: a hyperparameter for probabilities
+        p_t: maximum probability for deleting an edge
         '''
 
         # key = ordered tuple (by nodes)
@@ -88,7 +127,7 @@ class SubgraphLoader:
             for n2 in graph.get(n1):
                 e = sorted([n1, n2])
                 w = edge_weights.get(e, 0)
-                w += len(len(graph.get(n1)))
+                w += len(graph.get(n1)) # add the degree
                 edge_weights[e] = w
 
                 # we need to store the maximum weight for normalization (later on)
@@ -137,12 +176,12 @@ class SubgraphLoader:
     def _store_torch_graph_as_dict(
             self, 
             graph: Data,
-        ) -> Dict[int, int]:
+        ) -> Dict[int, List[int]]:
         pass
 
     def _store_dict_as_torch_graph(
             self, 
-            graph: Dict[int, int],
+            graph: Dict[int, List[int]],
         ) -> Data:
         pass
     
