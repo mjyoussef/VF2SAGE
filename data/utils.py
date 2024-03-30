@@ -15,14 +15,23 @@ class UnionFind:
     
     def find(self, x: int) -> int:
         '''Returns the parent (aka representative) vertex of the subgraph
-        that node x is part of.'''
+        that node x is part of.
+        
+        Arguments:
+        x: a node
+        '''
         if self.parent[x] != x:
             self.parent[x] = self.find(self.parent[x])
         
         return self.parent[x]
     
     def union(self, x: int, y: int) -> None:
-        '''Merges the subgraphs that nodes x and y are part of.'''
+        '''Merges the subgraphs that nodes x and y are part of.
+        
+        Arguments:
+        x: a node
+        y: a node
+        '''
         root_x, root_y = self.find(x), self.find(y)
         if root_x == root_y:
             return
@@ -76,6 +85,16 @@ class SubgraphLoader:
             p_f: float,
             p_t: float,
         ) -> torch.Tensor:
+        '''Perturbs the feature vectors of a graph; the degree of perturbation of each
+        dimension is determined using degree centrality.
+
+        Arguments:
+        graph: a graph
+        feature: the node features of the graph
+        positive: whether to create a positive or negative training sample perturbation
+        p_f: a hyperparameter for controlling the degree of perturbation
+        p_t: maximum probability for masking an entry in a feature vector
+        '''
 
         # degree centralities
         centralities = [len(graph[n]) for n in graph]
@@ -113,9 +132,9 @@ class SubgraphLoader:
         for positive or negative training samples.
 
         Arguments:
-        graph: the graph
-        positive: whether to generate a perturbation for a positive or negative sample
-        p_e: a hyperparameter for probabilities
+        graph: a graph
+        positive: whether to create a positive or negative training sample perturbation
+        p_e: a hyperparameter for controlling the degree of perturbation
         p_t: maximum probability for deleting an edge
         '''
 
@@ -173,17 +192,32 @@ class SubgraphLoader:
                 
         return perturbed_graph
 
-    def _store_torch_graph_as_dict(
+    def _torch_graph_to_dict(
             self, 
             graph: Data,
         ) -> Dict[int, List[int]]:
-        pass
+        '''
+        Converts a PyTorch Geo graph into an adjacency matrix, represented
+        as a dictionary.
 
-    def _store_dict_as_torch_graph(
+        Arguments:
+        graph: a PyTorch Geo graph
+        '''
+        # TODO
+        return dict()
+
+    def _dict_to_torch_graph(
             self, 
             graph: Dict[int, List[int]],
         ) -> Data:
-        pass
+        '''Converts an adjacency matrix, represented as a dictionary, into a
+        PyTorch Geometric graph (ignores edge_attr).
+
+        Arguments:
+        graph: a PyTorch Geo graph'''
+
+        # TODO
+        return Data()
     
     def _bfs(self, 
             start: int,
@@ -194,7 +228,7 @@ class SubgraphLoader:
 
         Arguments:
         start: the starting node
-        graph: the graph
+        graph: a graph
         depth: maximum depth for BFS traversal
         '''
         q = Queue()
@@ -224,43 +258,32 @@ class SubgraphLoader:
 
     def generate_samples(
             self, 
-            positive_subgraphs: int,
-            negative_subgraphs: int,
+            max_positive_subgraphs: int,
+            max_negative_subgraphs: int,
+            p_f: float,
+            p_e: float,
+            p_t: float,
         ) -> Tuple[Dataset, Dataset, List[Tuple[int, int]]]:
         '''Generates positive training samples; returns a loader for subgraphs, a loader
         for superset graphs, and a mapping from subgraph to superset nodes (by index).
         
         Arguments:
-        positive_subgraphs: number of positive samples for each graph
-        negative_subgraphs: number of negative samples for each graph
+        max_positive_subgraphs: max umber of positive samples for each graph
+        max_negative_subgraphs: max number of negative samples for each graph
+        p_f, p_e, p_t: hyperparameters for perturbation step
         '''
 
-        '''
-        Generating positive samples:
-        1. G' <- run a random BFS from a node in g
-        2. G'' <- perturbation on G' w/ positive = True
-        3. Add (G', G'')
-
-        Generating negative samples:
-        1. G' <- run a random BFS from a node in g
-        2. G'' <- perturbation on G' w/ positive = False
-        3. Add (G', G'')
-        '''
-
-        dataset = []
         for g in self.graphs:
-            g_dict = self._store_torch_graph_as_dict(g)
-            subgraph_dict = None
-            pass
+            # TODO:
+            # Generate a positive sample:
+            # 1. select an arbitrary node in g
+            # 2. run a random BFS traversal from that node
+            # 3. perturb the subgraph (w/ positive=True) and add it to the dataset
+            # make sure to perturb the topology and node features!
 
-    def generate_negative_samples(
-            self, 
-            num_subgraphs: int,
-        ) -> Tuple[Dataset, Dataset, List[Tuple[int, int]]]:
-        '''Generates negative training samples; returns a loader for subgraphs, a loader
-        for superset graphs, and a mapping from subgraph to superset nodes (by index).
-        
-        Arguments:
-        num_subgraphs: maximum number of subgraphs to generate from each graph
-        '''
-        pass
+            # Generate a negative sample:
+            # 1. select an arbitrary node in g
+            # 2. run a random BFS traversal from that node
+            # 3. perturb the subgraph (w/ positive=False) and add it to the dataset
+            # make sure to perturb the topology and node features!
+            pass
