@@ -1,9 +1,17 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv
 
 class GraphSAGE(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, k):
+    def __init__(
+            self, 
+            in_channels: int, 
+            hidden_channels: int, 
+            out_channels: int, 
+            k: int
+        ) -> None:
+
         super(GraphSAGE, self).__init__()
         # neighborhood sampling depth
         self.k = k
@@ -25,7 +33,7 @@ class GraphSAGE(nn.Module):
         # linear layer
         self.lin = nn.Linear(hidden_channels, out_channels)
 
-    def forward(self, x, edge_index):
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         # apply each layer
         for conv in self.convs:
             x = F.relu(conv(x, edge_index))
