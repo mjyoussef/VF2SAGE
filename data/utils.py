@@ -1,8 +1,6 @@
 import torch
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, List
 from torch_geometric.data import Dataset, Data
-from torch_geometric.datasets import PPI, WordNet18RR
-from torch_geometric.loader import DataLoader
 import math
 import random
 from queue import Queue
@@ -77,6 +75,9 @@ class SubgraphLoader:
     def __init__(self, graphs: Dataset, k: int) -> None:
         self.graphs = graphs
         self.k = k
+        self.subgraph_dataset = None
+        self.superset_dataset = None
+        self.mapping = None
 
     def _perturb_features(
             graph: Dict[int, List[int]],
@@ -192,44 +193,62 @@ class SubgraphLoader:
                 
         return perturbed_graph
 
-    def _torch_graph_to_dict(
+    def _torch_graph_to_adj_dict(
             self, 
             graph: Data,
         ) -> Dict[int, List[int]]:
         '''
-        Converts a PyTorch Geo graph into an adjacency matrix, represented
-        as a dictionary.
+        Converts a PyTorch Geo graph into an adjacency dictionary.
 
         Arguments:
         graph: a PyTorch Geo graph
         '''
         # TODO
-        return dict()
 
-    def _dict_to_torch_graph(
+        adj_dict = dict()
+        for i in range(graph.edge_index.size(1)):
+            head, tail = graph.edge_index[:, 1]
+            head, tail = int(head.item()), int(tail.item())
+
+            neighbors = adj_dict.get(head, [])
+            neighbors.append(tail)
+            adj_dict[head] = neighbors
+
+        return graph.x, adj_dict
+
+    def _adj_dict_to_tensor(
             self, 
-            graph: Dict[int, List[int]],
+            adj_dict: Dict[int, List[int]],
         ) -> Data:
-        '''Converts an adjacency matrix, represented as a dictionary, into a
-        PyTorch Geometric graph (ignores edge_attr).
+        '''Converts an adjacency dictionary into a torch tensor (stored in the `edge_index`
+        field of a PyTorch geo data object).
 
         Arguments:
-        graph: a PyTorch Geo graph'''
+        adj_dict: an adjacency dictionary
+        '''
 
         # TODO
-        return Data()
+        num_edges = sum(len(edges) for edges in adj_dict.values())
+        edge_index = torch.tensor(2, num_edges)
+
+        idx = 0
+        for head in adj_dict:
+            for tail in adj_dict[head]:
+                edge_index[0][idx] = head
+                edge_index[1][idx] = tail
+                idx += 1
+
+        return edge_index
     
     def _bfs(self, 
             start: int,
-            graph: Dict[int, List[int]], 
-            depth: int
+            graph: Dict[int, List[int]],
         ) -> Dict[int, List[int]]:
-        '''Returns the subgraph, with a maximum depth, centered at the `start` node.
+        '''Returns the subgraph, with a maximum depth of self.k, centered at the `start` node.
 
         Arguments:
         start: the starting node
         graph: a graph
-        depth: maximum depth for BFS traversal
         '''
         q = Queue()
         visited = set()
@@ -238,7 +257,7 @@ class SubgraphLoader:
         while len(q) > 0:
             n, ply = q.get()
 
-            if n in visited or ply > depth:
+            if n in visited or ply > self.k:
                 continue
 
             visited.add(n)
@@ -264,7 +283,7 @@ class SubgraphLoader:
             p_e: float,
             p_t: float,
         ) -> Tuple[Dataset, Dataset, List[Tuple[int, int]]]:
-        '''Generates positive training samples; returns a loader for subgraphs, a loader
+        '''Generates positive and negative training samples; returns a loader for subgraphs, a loader
         for superset graphs, and a mapping from subgraph to superset nodes (by index).
         
         Arguments:
@@ -286,4 +305,6 @@ class SubgraphLoader:
             # 2. run a random BFS traversal from that node
             # 3. perturb the subgraph (w/ positive=False) and add it to the dataset
             # make sure to perturb the topology and node features!
+
+            # don't forget to update self.subgraph_dataset, self.superset_dataset, and self.mapping
             pass
