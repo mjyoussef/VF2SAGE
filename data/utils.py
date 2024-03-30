@@ -70,6 +70,7 @@ def kruskals(
 
 class DatasetWrapper(Dataset):
     def __init__(self, data_lst: List[Data]) -> None:
+        super(Dataset, self).__init__()
         self.data_lst = data_lst
     
     def __len__(self) -> int:
