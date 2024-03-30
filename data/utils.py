@@ -268,7 +268,6 @@ class SubgraphLoader:
             self, 
             start: int,
             graph: Data,
-            adj_mat: List[List[int]],
         ) -> Tuple[List[List[int]], torch.Tensor]:
         '''Returns the subgraph, with a maximum depth of self.k, centered at the `start` node.
 
@@ -277,10 +276,13 @@ class SubgraphLoader:
         graph: a PyTorch Geo graph
         adj_mat: adjacency matrix of the graph
         '''
+        # TODO
+        # optimize this using only the graph since generating an adj_mat is costly!
+
         q = Queue()
         mapping = dict()
-        q.put((start, 0))
         counter = 0
+        q.put((start, 0))
 
         while len(q) > 0:
             n, ply = q.get()
@@ -291,12 +293,12 @@ class SubgraphLoader:
             mapping[n] = counter
             counter += 1
 
-            for neighbor in adj_mat[n]:
-                q.put((neighbor, ply+1))
+            for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
+                q.put((neighbor.item(), ply+1))
         
         subgraph = [[] for _ in range(len(mapping))]
         for n in mapping:
-            for neighbor in adj_mat[n]:
+            for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
                 if neighbor in mapping:
                     subgraph[mapping[n]] = mapping[neighbor]
         
@@ -325,14 +327,12 @@ class SubgraphLoader:
 
         for g in self.graphs:
 
-            adj_mat = self._graph_to_adj_mat(g)
-
             size = g.size(0)
             nodes = list(range(n))
             rand_nodes = random.sample(nodes, min(size, max_subgraphs))
 
             for n in rand_nodes:
-                sub_adj_mat, features = self._bfs(n, g, adj_mat)
+                sub_adj_mat, features = self._bfs(n, g)
                 perturbed_sub_adj_mat = self._perturb_topology(sub_adj_mat, positive, p_e, p_t)
                 perturbed_features = self._perturb_features(sub_adj_mat, features, positive, p_f, p_t)
 
