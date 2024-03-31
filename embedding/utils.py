@@ -8,13 +8,13 @@ from queue import Queue
 
 class UnionFind:
     '''UnionFind data structure for Kruskal's algorithm.'''
-    def __init__(self, num_vertices: int) -> None:
-        self.parent = [i for i in range(num_vertices)]
-        self.rank = [0] * num_vertices
+    def __init__(self, num_nodes: int) -> None:
+        self.parent = [i for i in range(num_nodes)]
+        self.rank = [0] * num_nodes
     
     def find(self, x: int) -> int:
-        '''Returns the parent (aka representative) vertex of the subgraph
-        that node x is part of.
+        '''Returns the parent (aka representative) node of the subgraph
+        that x is part of.
         
         Arguments:
         x: a node
@@ -25,7 +25,7 @@ class UnionFind:
         return self.parent[x]
     
     def union(self, x: int, y: int) -> None:
-        '''Merges the subgraphs that nodes x and y are part of.
+        '''Merges the subgraphs that x and y are part of.
         
         Arguments:
         x: a node
@@ -45,19 +45,19 @@ class UnionFind:
 
 def kruskals(
         edges: List[Tuple[float, int, int]],
-        num_vertices,
+        num_nodes: int,
     ) -> Tuple[List[Tuple[float, int, int]], List[Tuple[float, int, int]]]:
-    '''Kruskal's algorithm for computing a minimum spanning tree (MST); returns the list
-    of edges in the MST and NOT in the MST
+    '''Kruskal's algorithm for computing a minimum spanning tree (MST); returns a tuple
+    consisting of the edges in the MST and NOT in the MST.
     
     Arguments:
-    edges: a list of edges represented as tuples consisting of weight, tail, head
-    num_vertices: the number of vertices in the graph
+    edges: a list of edges represented as tuples (weight, tail, head)
+    num_nodes: the number of vertices in the graph
     '''
 
     mst_edges = []
     non_mst_edges = []
-    uf = UnionFind(num_vertices)
+    uf = UnionFind(num_nodes)
     sorted_edges = sorted(edges, key=lambda x: x[0]) # sort by weight
 
     for e in sorted_edges:
@@ -68,21 +68,10 @@ def kruskals(
             non_mst_edges.append(e)
     
     return mst_edges, non_mst_edges
-
-class DatasetWrapper(Dataset):
-    def __init__(self, data_lst: List[Data]) -> None:
-        super(Dataset, self).__init__()
-        self.data_lst = data_lst
-    
-    def __len__(self) -> int:
-        return len(self.data_lst)
-    
-    def __getitem__(self, idx: int) -> Data:
-        return self.data_lst[idx]
         
 def compute_node_centralities(adj_mat: List[List[int]]) -> List[int]:
-    '''Computes a centrality score for each node in the graph. This is based on the 
-    degree of nodes.
+    '''Computes a centrality score for each node in the graph. This is based on
+    the degree of a node.
 
     Arguments:
     adj_mat: an adjacency matrix for a graph
@@ -93,7 +82,7 @@ def compute_node_centralities(adj_mat: List[List[int]]) -> List[int]:
 def compute_edge_centralities(adj_mat: List[List[int]]) -> Dict[Tuple[int, int], float]:
     '''Computes a centrality score for each edge in the graph. This is based on the
     average centrality of the endpoints in an undirected graph or the centrality of the head
-    of the edge in an directed graph.
+    of the edge in a directed graph.
 
     Arguments:
     adj_mat: an adjacency matrix for a graph
@@ -104,7 +93,7 @@ def compute_edge_centralities(adj_mat: List[List[int]]) -> Dict[Tuple[int, int],
     for n, neighbors in enumerate(adj_mat):
         for n2 in neighbors:
             e = tuple(sorted([n, n2]))
-            edge_centralities[e] = edge_centralities.get(e, 0) + 0.5
+            edge_centralities[e] = edge_centralities.get(e, 0) + (len(adj_mat[n2]) / 2)
     
     return edge_centralities
 
@@ -114,12 +103,11 @@ def perturb_features(
         p_f: float,
         p_t: float,
     ) -> torch.Tensor:
-    '''Perturbs the feature vectors of a graph for positive training samples; 
-    the degree of perturbation of each dimension is determined using degree centrality.
+    '''Perturbs the feature vectors of a graph for positive training samples.
 
     Arguments:
     adj_mat: an adjacency matrix for a graph
-    feature: the node features of the graph
+    features: the node features of the graph
     p_f: a hyperparameter for controlling the degree of perturbation
     p_t: maximum probability for masking an entry in a feature vector
     '''
@@ -152,7 +140,7 @@ def perturb_topology(
         p_t: float,
     ) -> List[List[int]]:
     '''
-    Generates a perturbed view of the graph, based on degree centrality,
+    Perturbs the topology of the graph, based on degree centrality,
     for positive training samples.
 
     Arguments:
@@ -218,7 +206,7 @@ def adj_mat_to_graph(x: torch.Tensor, adj_mat: List[List[int]]) -> Data:
 
     Arguments:
     x: node features tensor
-    adj_mat: an adjacency matrix
+    adj_mat: an adjacency matrix for the graph
     '''
 
     num_edges = sum(len(neighbors) for neighbors in adj_mat)
@@ -234,13 +222,13 @@ def adj_mat_to_graph(x: torch.Tensor, adj_mat: List[List[int]]) -> Data:
     return Data(x=x, edge_index=edge_index)
 
 def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]:
-    '''Returns the subgraph, with a maximum depth of self.k, centered at the `start` node.
+    '''Returns the subgraph, with a maximum depth of k, centered at 
+    some starting node.
 
     Arguments:
     start: the starting node
     k: maximum depth
     graph: a PyTorch Geo graph
-    adj_mat: adjacency matrix of the graph
     '''
     # TODO
     # optimize this using only the graph since generating an adj_mat is costly!
@@ -274,31 +262,29 @@ def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]
 def generate_samples(
         graphs: Dataset,
         k: int,
-        positive_samples_per_graph: int,
-        negative_samples_per_graph: int,
+        max_subgraphs: int,
         p_f: float,
         p_e: float,
         p_t: float,
-    ) -> Tuple[Dataset, Dataset, List[int]]:
-    '''Generates positive or negative training samples; returns a list subgraphs and 
-    corresponding superset graphs.
+    ) -> List[Tuple[Data, Data]]:
+    '''Generates positive or negative training samples; returns a list of 
+    corresponding graphs.
     
     Arguments:
     graphs: original dataset of graphs
     k: maximum depth of subgraph training samples
-    max_positive_subgraphs: max number of positive samples for each graph
-    max_negative_subgraphs: max number of negative samples for each graph
-    p_f, p_e, p_t: hyperparameters for perturbation step
+    max_subgraphs: max number of subgraphs to sample from each graph (for 
+    positive and negative training samples)
+    p_f, p_e, p_t: hyperparameters for perturbations
     '''
 
-    data_subgraphs = []
-    data_supersets = []
+    data = []
 
     for g in graphs:
 
         size = g.size(0)
         nodes = list(range(n))
-        rand_nodes_pos = random.sample(nodes, min(size, positive_samples_per_graph))
+        rand_nodes_pos = random.sample(nodes, min(size, max_subgraphs))
 
         for n in rand_nodes_pos: # positive training samples
             sub_adj_mat, features = bfs(n, k, g)
@@ -306,69 +292,28 @@ def generate_samples(
             perturbed_sub_adj_mat = perturb_topology(sub_adj_mat, p_e, p_t)
             perturbed_features = perturb_features(sub_adj_mat, features, p_f, p_t)
 
-            # add to the datasets
-            data_subgraphs.append(
-                adj_mat_to_graph(perturbed_features, perturbed_sub_adj_mat)
-            )
-            data_supersets.append(
-                adj_mat_to_graph(features, sub_adj_mat)
+            data.append(
+                (
+                    adj_mat_to_graph(perturbed_features, perturbed_sub_adj_mat),
+                    adj_mat_to_graph(features, sub_adj_mat)
+                )
             )
         
-        rand_nodes_neg = random.sample(nodes, min(size, negative_samples_per_graph*2))
+        rand_nodes_neg = random.sample(nodes, min(size, max_subgraphs*2))
         for idx, n in range(len(rand_nodes_neg)//2): # negative training samples
             sub_adj_mat, features = bfs(n, k, g)
 
             idx2 = len(rand_nodes_neg) - idx - 1
             sub_adj_mat2, features2 = bfs(rand_nodes_neg[idx2], k, g)
-            data_subgraphs.append(
-                adj_mat_to_graph(features, sub_adj_mat)
+
+            data.append(
+                (
+                    adj_mat_to_graph(features, sub_adj_mat), 
+                    adj_mat_to_graph(features2, sub_adj_mat2)
+                )
             )
-            data_supersets.append(
-                adj_mat_to_graph(features2, sub_adj_mat2)
-            )
 
-    return data_subgraphs, data_supersets
-
-def generate_all_samples(
-        graphs: Dataset, 
-        k: int, 
-        max_subgraphs: int,
-        p_f: float,
-        p_e: float,
-        p_t: float,
-    ) -> List[Tuple[Data, Data]]:
-    '''
-    Generates all training samples; returns a dataset of subgraphs and corresponding
-    superset graphs.
-    '''
-    positive_subgraphs, positive_supersets = generate_samples(
-        graphs,
-        k,
-        max_subgraphs,
-        True,
-        p_f,
-        p_e,
-        p_t
-    )
-
-    negative_subgraphs, negative_supersets = generate_samples(
-        graphs,
-        k,
-        max_subgraphs,
-        False,
-        p_f,
-        p_e,
-        p_t
-    )
-
-    subgraphs = positive_subgraphs + negative_subgraphs
-    supersets = positive_supersets + negative_supersets
-
-    out = []
-    for i, subgraph in enumerate(subgraphs):
-        out.append((subgraph, supersets[i]))
-
-    return out
+    return data
 
 def load(
         data: List[Tuple[Data, Data]],
@@ -377,6 +322,15 @@ def load(
         bs: int,
         shuffle: Optional[bool] = True
     ) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    '''Returns dataloaders for training, validation, and test datasets.
+    
+    Arguments:
+    data: a list of corresponding subgraphs
+    train_split: portion of data to allocate for training
+    val_split: portion of data to allocate for validation
+    bs: batch size
+    shuffles: whether to shuffle the data
+    '''
 
     if shuffle:
         random.shuffle(data)
