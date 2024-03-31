@@ -1,6 +1,7 @@
 import torch
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 from torch_geometric.data import Dataset, Data
+from torch_geometric.loader import DataLoader
 import math
 import random
 from queue import Queue
@@ -110,17 +111,15 @@ def compute_edge_centralities(adj_mat: List[List[int]]) -> Dict[Tuple[int, int],
 def perturb_features(
         adj_mat: List[List[int]],
         features: torch.Tensor,
-        positive: bool,
         p_f: float,
         p_t: float,
     ) -> torch.Tensor:
-    '''Perturbs the feature vectors of a graph; the degree of perturbation of each
-    dimension is determined using degree centrality.
+    '''Perturbs the feature vectors of a graph for positive training samples; 
+    the degree of perturbation of each dimension is determined using degree centrality.
 
     Arguments:
     adj_mat: an adjacency matrix for a graph
     feature: the node features of the graph
-    positive: whether to create a positive or negative training sample perturbation
     p_f: a hyperparameter for controlling the degree of perturbation
     p_t: maximum probability for masking an entry in a feature vector
     '''
@@ -141,9 +140,6 @@ def perturb_features(
     probs = ((max_weight - weights) / max_weight) * p_f
     probs = torch.min(probs, p_t)
 
-    # negate if positive = False
-    probs = probs if positive else 1 - probs
-
     # apply salt and pepper noise
     mask = torch.randn(features.size()) >= probs
     perturbed_features = features * mask
@@ -151,18 +147,16 @@ def perturb_features(
     return perturbed_features
 
 def perturb_topology(
-        adj_mat: List[List[int]], 
-        positive: bool,
+        adj_mat: List[List[int]],
         p_e: float,
         p_t: float,
     ) -> List[List[int]]:
     '''
     Generates a perturbed view of the graph, based on degree centrality,
-    for positive or negative training samples.
+    for positive training samples.
 
     Arguments:
     adj_mat: an adjacency matrix for a graph
-    positive: whether to create a positive or negative training sample perturbation
     p_e: a hyperparameter for controlling the degree of perturbation
     p_t: maximum probability for deleting an edge
     '''
@@ -176,7 +170,6 @@ def perturb_topology(
 
         # normalize (truncates to p_t to prevent the perturbation from being too heavy)
         normalized_w = min(((max_weight - w) * p_e) / max_weight, p_t)
-        normalized_w = normalized_w if positive else 1 - normalized_w
 
         edges.append((normalized_w, e[0], e[1]))
     
@@ -281,14 +274,14 @@ def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]
 def generate_samples(
         graphs: Dataset,
         k: int,
-        max_subgraphs: int,
-        positive: bool,
+        positive_samples_per_graph: int,
+        negative_samples_per_graph: int,
         p_f: float,
         p_e: float,
         p_t: float,
-    ) -> Tuple[Dataset, Dataset]:
-    '''Generates positive and negative training samples; returns a dataset for subgraphs, 
-    and a dataset for superset graphs.
+    ) -> Tuple[Dataset, Dataset, List[int]]:
+    '''Generates positive or negative training samples; returns a list subgraphs and 
+    corresponding superset graphs.
     
     Arguments:
     graphs: original dataset of graphs
@@ -305,12 +298,13 @@ def generate_samples(
 
         size = g.size(0)
         nodes = list(range(n))
-        rand_nodes = random.sample(nodes, min(size, max_subgraphs))
+        rand_nodes_pos = random.sample(nodes, min(size, positive_samples_per_graph))
 
-        for n in rand_nodes:
+        for n in rand_nodes_pos: # positive training samples
             sub_adj_mat, features = bfs(n, k, g)
-            perturbed_sub_adj_mat = perturb_topology(sub_adj_mat, positive, p_e, p_t)
-            perturbed_features = perturb_features(sub_adj_mat, features, positive, p_f, p_t)
+
+            perturbed_sub_adj_mat = perturb_topology(sub_adj_mat, p_e, p_t)
+            perturbed_features = perturb_features(sub_adj_mat, features, p_f, p_t)
 
             # add to the datasets
             data_subgraphs.append(
@@ -319,5 +313,80 @@ def generate_samples(
             data_supersets.append(
                 adj_mat_to_graph(features, sub_adj_mat)
             )
+        
+        rand_nodes_neg = random.sample(nodes, min(size, negative_samples_per_graph*2))
+        for idx, n in range(len(rand_nodes_neg)//2): # negative training samples
+            sub_adj_mat, features = bfs(n, k, g)
 
-    return DatasetWrapper(data_subgraphs), DatasetWrapper(data_supersets)
+            idx2 = len(rand_nodes_neg) - idx - 1
+            sub_adj_mat2, features2 = bfs(rand_nodes_neg[idx2], k, g)
+            data_subgraphs.append(
+                adj_mat_to_graph(features, sub_adj_mat)
+            )
+            data_supersets.append(
+                adj_mat_to_graph(features2, sub_adj_mat2)
+            )
+
+    return data_subgraphs, data_supersets
+
+def generate_all_samples(
+        graphs: Dataset, 
+        k: int, 
+        max_subgraphs: int,
+        p_f: float,
+        p_e: float,
+        p_t: float,
+    ) -> List[Tuple[Data, Data]]:
+    '''
+    Generates all training samples; returns a dataset of subgraphs and corresponding
+    superset graphs.
+    '''
+    positive_subgraphs, positive_supersets = generate_samples(
+        graphs,
+        k,
+        max_subgraphs,
+        True,
+        p_f,
+        p_e,
+        p_t
+    )
+
+    negative_subgraphs, negative_supersets = generate_samples(
+        graphs,
+        k,
+        max_subgraphs,
+        False,
+        p_f,
+        p_e,
+        p_t
+    )
+
+    subgraphs = positive_subgraphs + negative_subgraphs
+    supersets = positive_supersets + negative_supersets
+
+    out = []
+    for i, subgraph in enumerate(subgraphs):
+        out.append((subgraph, supersets[i]))
+
+    return out
+
+def load(
+        data: List[Tuple[Data, Data]],
+        train_split: float,
+        val_split: float,
+        bs: int,
+        shuffle: Optional[bool] = True
+    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
+
+    if shuffle:
+        random.shuffle(data)
+
+    size = len(data)
+    train_idx = int(train_split*size)
+    val_idx = train_idx + int(val_split*size)
+
+    train_loader = DataLoader(data[0:train_idx], batch_size=bs, shuffle=False)
+    val_loader = DataLoader(data[train_idx:val_idx], batch_size=bs, shuffle=False)
+    test_loader = DataLoader(data[val_idx:], batch_size=bs, shuffle=False)
+
+    return train_loader, val_loader, test_loader
