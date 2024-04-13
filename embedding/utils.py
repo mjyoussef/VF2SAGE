@@ -2,7 +2,7 @@ import torch
 from typing import Tuple, Dict, List, Optional
 from torch_geometric.data import Dataset, Data
 from torch_geometric.loader import DataLoader
-import math
+import os
 import random
 from queue import Queue
 
@@ -315,6 +315,42 @@ def generate_samples(
             )
 
     return data
+
+def save_data(
+        data: List[Tuple[Data, Data]], 
+        folder: str
+    ) -> None:
+    '''Saves data to the folder.
+    
+    Arguments:
+    data: data
+    folder: folder path
+    '''
+    
+    counter = 0
+    for d1, d2 in data:
+        path = f"{folder}/p-{counter}"
+        counter += 1
+
+        # check if the directory exists
+        if not os.path.exists(path):
+            os.makedirs(path)
+        
+        # save
+        full_path_d1 = os.path.join(path, 'd1.pt')
+        full_path_d2 = os.path.join(path, 'd2.pt')
+        torch.save(d1, full_path_d1)
+        torch.save(d2, full_path_d2)
+
+def read_data(folder: str) -> List[Tuple[Data, Data]]:
+    '''Reads data from the folder.
+    
+    Arguments:
+    folder: folder path
+    '''
+
+    data = []
+    pass
 
 def load(
         data: List[Tuple[Data, Data]],
