@@ -329,16 +329,16 @@ def save_data(
     
     counter = 0
     for d1, d2 in data:
-        path = f"{folder}/p-{counter}"
+        dir_path = f"{folder}/p-{counter}"
         counter += 1
 
         # check if the directory exists
-        if not os.path.exists(path):
-            os.makedirs(path)
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
         
         # save
-        full_path_d1 = os.path.join(path, 'd1.pt')
-        full_path_d2 = os.path.join(path, 'd2.pt')
+        full_path_d1 = os.path.join(dir_path, 'd1.pt')
+        full_path_d2 = os.path.join(dir_path, 'd2.pt')
         torch.save(d1, full_path_d1)
         torch.save(d2, full_path_d2)
 
@@ -350,7 +350,20 @@ def read_data(folder: str) -> List[Tuple[Data, Data]]:
     '''
 
     data = []
-    pass
+    for root, _, files in os.walk(folder):
+        if (root == folder):
+            continue
+        
+        if len(files) != 2:
+            continue
+
+        d1_path = os.path.join(root, files[0])
+        d2_path = os.path.join(root, files[1])
+
+        pair = [torch.load(d1_path), torch.load(d2_path)]
+        data.append(pair)
+    
+    return data
 
 def load(
         data: List[Tuple[Data, Data]],
