@@ -247,18 +247,23 @@ def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]
         mapping[n] = counter
         counter += 1
 
-        for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
-            q.put((int(neighbor.item()), ply+1))
+        neighbors = graph.edge_index[1][graph.edge_index[0] == n]
+        for neighbor in neighbors:
+            neighbor_idx = int(neighbor.item())
+            q.put((neighbor_idx, ply+1))
     
     subgraph = [[] for _ in range(len(mapping))]
     for n in mapping:
         # add neighbors that are ONLY in the `mapping`
         for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
-            if neighbor in mapping:
-                subgraph[mapping[n]] = mapping[neighbor]
-    
-    idxs = torch.Tensor(sorted(list(mapping.keys())))
-    return subgraph, graph.x[idxs]
+            neighbor_idx = int(neighbor.item())
+            if neighbor_idx in mapping:
+                subgraph[mapping[n]].append(mapping[neighbor_idx])
+
+    key_lst = sorted(list(mapping.keys()))
+    idxs_float = torch.Tensor(key_lst)
+    idxs_int = idxs_float.to(dtype=torch.int64)
+    return subgraph, graph.x[idxs_int]
 
 def generate_samples(
         graphs: Dataset,
@@ -280,11 +285,12 @@ def generate_samples(
     '''
 
     data = []
+    counter = 0
 
     for g in graphs:
 
-        size = g.size(0)
-        nodes = list(range(n))
+        size = g.x.size(0)
+        nodes = list(range(size))
         rand_nodes_pos = random.sample(nodes, min(size, max_subgraphs))
 
         for n in rand_nodes_pos: # positive training samples
@@ -299,6 +305,9 @@ def generate_samples(
                     adj_mat_to_graph(features, sub_adj_mat)
                 )
             )
+
+            print(f"Pair {counter}")
+            counter += 1
         
         rand_nodes_neg = random.sample(nodes, min(size, max_subgraphs*2))
         for idx in range(len(rand_nodes_neg)//2): # negative training samples
@@ -313,6 +322,9 @@ def generate_samples(
                     adj_mat_to_graph(features2, sub_adj_mat2)
                 )
             )
+            
+            print(f"Pair {counter}")
+            counter += 1
 
     return data
 
