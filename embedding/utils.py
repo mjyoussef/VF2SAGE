@@ -24,7 +24,7 @@ class UnionFind:
         
         return self.parent[x]
     
-    def union(self, x: int, y: int) -> None:
+    def union(self, x: int, y: int) -> bool:
         '''Merges the subgraphs that x and y are part of.
         
         Arguments:
@@ -33,7 +33,7 @@ class UnionFind:
         '''
         root_x, root_y = self.find(x), self.find(y)
         if root_x == root_y:
-            return
+            return False
         
         if self.rank[root_x] < self.rank[root_y]:
             self.parent[root_x] = root_y
@@ -42,6 +42,8 @@ class UnionFind:
         else:
             self.parent[root_x] = root_y
             self.rank[root_y] += 1
+        
+        return True
 
 def kruskals(
         edges: List[Tuple[float, int, int]],
@@ -61,8 +63,7 @@ def kruskals(
     sorted_edges = sorted(edges, key=lambda x: x[0]) # sort by weight
 
     for e in sorted_edges:
-        if uf.find(e[1]) != uf.find(e[2]):
-            uf.union(e[1], e[2])
+        if uf.union(e[1], e[2]): # true if they are NOT connected
             mst_edges.append(e)
         else:
             non_mst_edges.append(e)
@@ -117,15 +118,17 @@ def perturb_features(
     centralities = torch.tensor(centralities).unsqueeze(1)
 
     # n x m -> 1 x m tensor
+    # this measures the relative importance of each dimension
     weights = torch.abs((centralities * features).sum(dim=0))
 
+    # used for normalization
     max_weight = weights.max().item()
 
-    # use log the avoid heavily perturbing nodes w/ dense connections
-    weights = torch.log(weights)
-
-    # normalize the weights
+    # compute salt-pepper probability for each dimension
+    # (features w/ greater weight should have lower probabilities)
     probs = ((max_weight - weights) / max_weight) * p_f
+
+    # truncate probabilities to avoid heavy perturbation
     probs = torch.min(probs, p_t)
 
     # apply salt and pepper noise
@@ -153,9 +156,7 @@ def perturb_topology(
     max_weight = max([edge_centralities[e] for e in edge_centralities])
     edges = []
     for e in edge_centralities:
-        # using log alleviates the impact of nodes w/ heavily dense connections
-        w = math.log(edge_centralities[e])
-
+        w = edge_centralities[e]
         # normalize (truncates to p_t to prevent the perturbation from being too heavy)
         normalized_w = min(((max_weight - w) * p_e) / max_weight, p_t)
 
@@ -171,14 +172,14 @@ def perturb_topology(
         if random.random() >= e[0]:
             final_edges.append(e)
     
-    # transform back into a dictionary graph
+    # transform back into an adjacency matrix
     perturbed_graph = [[] for _ in range(len(adj_mat))]
 
     for e in final_edges:
         _, n, n2 = e
         perturbed_graph[n].append(n2)
 
-        # check if the edge is bidirectional (ie. if the graph is undirected)
+        # check if the edge is bidirectional
         if n in adj_mat[n2]:
             perturbed_graph[n2].append(n)
             
@@ -195,8 +196,8 @@ def graph_to_adj_mat(graph: Data) -> List[List[int]]:
     adj_mat = [[] for _ in range(graph.x.size(0))]
 
     for i in range(graph.edge_index.size(1)): # iterate over each edge
-        tail, head = graph.edge_index[:, 1]
-        tail, head = int(head.item()), int(tail.item())
+        tail, head = graph.edge_index[:, i]
+        tail, head = int(tail.item()), int(head.item())
         adj_mat[tail].append(head)
 
     return adj_mat
@@ -210,7 +211,7 @@ def adj_mat_to_graph(x: torch.Tensor, adj_mat: List[List[int]]) -> Data:
     '''
 
     num_edges = sum(len(neighbors) for neighbors in adj_mat)
-    edge_index = torch.tensor(2, num_edges)
+    edge_index = torch.zeros(2, num_edges)
 
     idx = 0
     for tail, neighbors in enumerate(adj_mat):
@@ -230,15 +231,14 @@ def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]
     k: maximum depth
     graph: a PyTorch Geo graph
     '''
-    # TODO
-    # optimize this using only the graph since generating an adj_mat is costly!
 
     q = Queue()
     mapping = dict()
     counter = 0
     q.put((start, 0))
 
-    while len(q) > 0:
+    # find all nodes in the k-hop neighborhood of `start`
+    while q.qsize() > 0:
         n, ply = q.get()
 
         if n in mapping or ply > k:
@@ -248,10 +248,11 @@ def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]
         counter += 1
 
         for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
-            q.put((neighbor.item(), ply+1))
+            q.put((int(neighbor.item()), ply+1))
     
     subgraph = [[] for _ in range(len(mapping))]
     for n in mapping:
+        # add neighbors that are ONLY in the `mapping`
         for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
             if neighbor in mapping:
                 subgraph[mapping[n]] = mapping[neighbor]
@@ -300,10 +301,10 @@ def generate_samples(
             )
         
         rand_nodes_neg = random.sample(nodes, min(size, max_subgraphs*2))
-        for idx, n in range(len(rand_nodes_neg)//2): # negative training samples
-            sub_adj_mat, features = bfs(n, k, g)
+        for idx in range(len(rand_nodes_neg)//2): # negative training samples
+            sub_adj_mat, features = bfs(rand_nodes_neg[idx], k, g)
 
-            idx2 = len(rand_nodes_neg) - idx - 1
+            idx2 = len(rand_nodes_neg) - 1 - idx
             sub_adj_mat2, features2 = bfs(rand_nodes_neg[idx2], k, g)
 
             data.append(
