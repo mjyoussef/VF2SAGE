@@ -1,5 +1,13 @@
 import argparse
 from typing import Dict, Any
+import torch
+from torch_geometric.datasets import WikiCS
+from utils import *
+
+
+def test_data_loader():
+    graphs = WikiCS('../datasets/wikics')
+    pairs = generate_samples(graphs, 1, 200, 0.1, 0.3, 0.7)
 
 def train(args: argparse.ArgumentParser) -> None:
     pass
@@ -37,20 +45,22 @@ if __name__ == '__main__':
     hd: 256
     
     '''
-    
-    parser.add_argument('--dataset', type=str, required=True, choices=['WikiCS', 'AmazonPhoto', 'CoauthorCS'])
-    parser.add_argument('--k', type=int, required=True)
-    parser.add_argument('--p_f', type=float, required=True)
-    parser.add_argument('--p_e', type=float, required=True)
-    parser.add_argument('--p_t', type=float, required=True)
-    parser.add_argument('--max_subgraphs', type=int, required=True)
-    parser.add_argument('--hidden_dimensions', type=float, required=True)
-    parser.add_argument('--activation', type=str, required=True, choices=['PReLu', 'RReLu', 'ReLu'])
-    parser.add_argument('--lr', type=float, required=True)
-    parser.add_argument('--epochs', type=int, required=True)
-    parser.add_argument('--bs', type=int, required=True)
-    parser.add_argument('--logging', type=bool, required=True)
 
-    args = parser.parse_args()
+    test_data_loader()
 
-    train(args.dataset)
+    # parser.add_argument('--dataset', type=str, required=True, choices=['WikiCS', 'AmazonPhoto', 'CoauthorCS'])
+    # parser.add_argument('--k', type=int, required=True)
+    # parser.add_argument('--p_f', type=float, required=True)
+    # parser.add_argument('--p_e', type=float, required=True)
+    # parser.add_argument('--p_t', type=float, required=True)
+    # parser.add_argument('--max_subgraphs', type=int, required=True)
+    # parser.add_argument('--hidden_dimensions', type=float, required=True)
+    # parser.add_argument('--activation', type=str, required=True, choices=['PReLu', 'RReLu', 'ReLu'])
+    # parser.add_argument('--lr', type=float, required=True)
+    # parser.add_argument('--epochs', type=int, required=True)
+    # parser.add_argument('--bs', type=int, required=True)
+    # parser.add_argument('--logging', type=bool, required=True)
+
+    # args = parser.parse_args()
+
+    # train(args.dataset)
