@@ -1,5 +1,5 @@
 import torch
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Set
 from torch_geometric.utils import degree
 from torch_geometric.data import Dataset, Data
 from torch_geometric.loader import DataLoader
@@ -69,7 +69,14 @@ def perturb_topology(
 
     return sorted_edge_index[:, :portion_to_keep]
 
-def bfs(start: int, k: int, graph: Data) -> Data:
+def bfs(
+        start: int, 
+        k: int, 
+        adj_mat: List[Set[int]], 
+        features: torch.Tensor, 
+        p: float = 0.2,
+        min_edges: int = 10,
+    ) -> Data:
     '''Returns the subgraph, with a maximum depth of k, centered at 
     some starting node.
 
@@ -94,18 +101,21 @@ def bfs(start: int, k: int, graph: Data) -> Data:
         mapping[n] = counter
         counter += 1
 
-        neighbors = graph.edge_index[1][graph.edge_index[0] == n]
-        for neighbor in neighbors:
-            neighbor_idx = int(neighbor.item())
-            q.put((neighbor_idx, ply+1))
+        neighbors = list(adj_mat[n])
+        truncated_neighbors = neighbors
+        if len(neighbors) > min_edges:
+            truncated_neighbors = neighbors[:int(p*len(neighbors))]
+        
+        for neighbor in truncated_neighbors:
+            q.put((neighbor, ply+1))
     
     edge_index = [[], []]
     for n in mapping:
-        for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
-            neighbor_idx = int(neighbor.item())
-            if neighbor_idx in mapping:
-                edge_index[0].append(mapping[n])
-                edge_index[1].append(mapping[neighbor_idx])
+        for neighbor in adj_mat[n]:
+            if neighbor not in mapping:
+                continue
+            edge_index[0].append(mapping[n])
+            edge_index[1].append(mapping[neighbor])
     
     # edge_index
     edge_index = torch.tensor(edge_index, dtype=torch.long)
@@ -114,7 +124,7 @@ def bfs(start: int, k: int, graph: Data) -> Data:
     idxs_float = torch.Tensor(sorted(list(mapping.keys())))
     idxs_long = idxs_float.to(dtype=torch.long)
 
-    subgraph = Data(x=graph.x[idxs_long], edge_index=edge_index)
+    subgraph = Data(x=features[idxs_long], edge_index=edge_index)
     return subgraph
 
 def generate_samples(
@@ -139,15 +149,21 @@ def generate_samples(
     counter = 0
 
     for g in graphs:
+        adj_mat = [set() for _ in range(g.x.size(0))]
+        for i in range(g.edge_index.shape[1]):
+            tail = g.edge_index[0, i]
+            head = g.edge_index[1, i]
+            adj_mat[tail].add(head)
 
-        size = g.x.size(0)
-        nodes = list(range(size))
-        rand_nodes_pos = random.sample(nodes, size)
+        
+        num_nodes = len(adj_mat)
+        nodes = list(range(num_nodes))
+        random.shuffle(nodes)
 
-        for n in rand_nodes_pos: # positive training samples
-
+        for n in nodes:
+            
             # get subgraph (k-hop neighborhood around node `n`)
-            subg = bfs(n, k, g)
+            subg = bfs(n, k, adj_mat, g.x)
 
             # perturb topology and features
             perturbed_subg_topology = perturb_topology(subg, dropout=dropout)
@@ -157,19 +173,18 @@ def generate_samples(
             # add pair
             data.append((perturbed_subg, subg))
 
-            print(f"Pair {counter}")
+            print(f"Positive pair: {counter}")
             counter += 1
         
-        rand_nodes_neg = random.sample(nodes, size)
-        for idx in range(len(rand_nodes_neg)//2): # negative training samples
-            subg1 = bfs(rand_nodes_neg[idx], k, g)
+        for idx in range(len(nodes)): # negative training samples
+            subg1 = bfs(nodes[idx], k, adj_mat, g.x)
 
-            idx2 = len(rand_nodes_neg) - 1 - idx
-            subg2 = bfs(rand_nodes_neg[idx2], k, g)
+            idx2 = len(nodes) - 1 - idx
+            subg2 = bfs(nodes[idx2], k, adj_mat, g.x)
 
             data.append((subg1, subg2))
             
-            print(f"Pair {counter}")
+            print(f"Negative pair: {counter}")
             counter += 1
 
     return data
