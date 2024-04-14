@@ -1,228 +1,75 @@
 import torch
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, List, Optional
+from torch_geometric.utils import degree
 from torch_geometric.data import Dataset, Data
 from torch_geometric.loader import DataLoader
 import os
 import random
 from queue import Queue
 
-class UnionFind:
-    '''UnionFind data structure for Kruskal's algorithm.'''
-    def __init__(self, num_nodes: int) -> None:
-        self.parent = [i for i in range(num_nodes)]
-        self.rank = [0] * num_nodes
-    
-    def find(self, x: int) -> int:
-        '''Returns the parent (aka representative) node of the subgraph
-        that x is part of.
-        
-        Arguments:
-        x: a node
-        '''
-        if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])
-        
-        return self.parent[x]
-    
-    def union(self, x: int, y: int) -> bool:
-        '''Merges the subgraphs that x and y are part of.
-        
-        Arguments:
-        x: a node
-        y: a node
-        '''
-        root_x, root_y = self.find(x), self.find(y)
-        if root_x == root_y:
-            return False
-        
-        if self.rank[root_x] < self.rank[root_y]:
-            self.parent[root_x] = root_y
-        elif self.rank[root_x] > self.rank[root_y]:
-            self.parent[root_y] = root_x
-        else:
-            self.parent[root_x] = root_y
-            self.rank[root_y] += 1
-        
-        return True
-
-def kruskals(
-        edges: List[Tuple[float, int, int]],
-        num_nodes: int,
-    ) -> Tuple[List[Tuple[float, int, int]], List[Tuple[float, int, int]]]:
-    '''Kruskal's algorithm for computing a minimum spanning tree (MST); returns a tuple
-    consisting of the edges in the MST and NOT in the MST.
-    
-    Arguments:
-    edges: a list of edges represented as tuples (weight, tail, head)
-    num_nodes: the number of vertices in the graph
-    '''
-
-    mst_edges = []
-    non_mst_edges = []
-    uf = UnionFind(num_nodes)
-    sorted_edges = sorted(edges, key=lambda x: x[0]) # sort by weight
-
-    for e in sorted_edges:
-        if uf.union(e[1], e[2]): # true if they are NOT connected
-            mst_edges.append(e)
-        else:
-            non_mst_edges.append(e)
-    
-    return mst_edges, non_mst_edges
-        
-def compute_node_centralities(adj_mat: List[List[int]]) -> List[int]:
-    '''Computes a centrality score for each node in the graph. This is based on
-    the degree of a node.
-
-    Arguments:
-    adj_mat: an adjacency matrix for a graph
-    '''
-
-    return [sum(n) for n in adj_mat]
-
-def compute_edge_centralities(adj_mat: List[List[int]]) -> Dict[Tuple[int, int], float]:
-    '''Computes a centrality score for each edge in the graph. This is based on the
-    average centrality of the endpoints in an undirected graph or the centrality of the head
-    of the edge in a directed graph.
-
-    Arguments:
-    adj_mat: an adjacency matrix for a graph
-    '''
-
-    edge_centralities = dict()
-
-    for n, neighbors in enumerate(adj_mat):
-        for n2 in neighbors:
-            e = tuple(sorted([n, n2]))
-            edge_centralities[e] = edge_centralities.get(e, 0) + (len(adj_mat[n2]) / 2)
-    
-    return edge_centralities
-
 def perturb_features(
-        adj_mat: List[List[int]],
-        features: torch.Tensor,
-        p_f: float,
-        p_t: float,
+        graph: Data,
+        p_damp: float,
+        p_trunc: float,
     ) -> torch.Tensor:
     '''Perturbs the feature vectors of a graph for positive training samples.
 
     Arguments:
-    adj_mat: an adjacency matrix for a graph
-    features: the node features of the graph
-    p_f: a hyperparameter for controlling the degree of perturbation
-    p_t: maximum probability for masking an entry in a feature vector
+    graph: PyTorch Geo graph
+    p_damp: controls degree of perturbation
+    p_trunc: max probability for masking a dimension
     '''
 
-    # record centralities as a n x 1 tensor
-    centralities = compute_node_centralities(adj_mat)
-    centralities = torch.tensor(centralities).unsqueeze(1)
+    # compute node centralities (n x 1 tensor)
+    num_nodes = graph.x.size(0)
+    node_centralities = degree(graph.edge_index[0], num_nodes=num_nodes) + degree(graph.edge_index[1], num_nodes=num_nodes)
+    centralities = node_centralities.clone().unsqueeze(1)
 
     # n x m -> 1 x m tensor
     # this measures the relative importance of each dimension
-    weights = torch.abs((centralities * features).sum(dim=0))
+    weights = torch.abs((centralities * graph.x).sum(dim=0))
+    weights = torch.log(weights)
 
     # used for normalization
-    max_weight = weights.max().item()
+    max_weight = weights.max()
 
     # compute salt-pepper probability for each dimension
     # (features w/ greater weight should have lower probabilities)
-    probs = ((max_weight - weights) / max_weight) * p_f
+    probs = ((max_weight - weights) / max_weight) * p_damp
 
     # truncate probabilities to avoid heavy perturbation
-    probs = torch.min(probs, p_t)
+    probs = torch.clamp(probs, p_trunc)
 
     # apply salt and pepper noise
-    mask = torch.randn(features.size()) >= probs
-    perturbed_features = features * mask
+    mask = torch.randn(graph.x.size()) >= probs
+    perturbed_features = graph.x * mask
 
     return perturbed_features
 
 def perturb_topology(
-        adj_mat: List[List[int]],
-        p_e: float,
-        p_t: float,
-    ) -> List[List[int]]:
-    '''
-    Perturbs the topology of the graph, based on degree centrality,
-    for positive training samples.
+        graph: Data, 
+        dropout=0.1,
+    ) -> torch.Tensor:
 
-    Arguments:
-    adj_mat: an adjacency matrix for a graph
-    p_e: a hyperparameter for controlling the degree of perturbation
-    p_t: maximum probability for deleting an edge
-    '''
+    # compute node degrees
+    num_nodes = graph.x.size(0)
+    node_degrees = degree(graph.edge_index[0], num_nodes=num_nodes) + degree(graph.edge_index[1], num_nodes=num_nodes)
 
-    edge_centralities = compute_edge_centralities(adj_mat)
-    max_weight = max([edge_centralities[e] for e in edge_centralities])
-    edges = []
-    for e in edge_centralities:
-        w = edge_centralities[e]
-        # normalize (truncates to p_t to prevent the perturbation from being too heavy)
-        normalized_w = min(((max_weight - w) * p_e) / max_weight, p_t)
+    # compute centrality scores for each edge (average of centrality scores for endpoints)
+    ec_scores = (node_degrees[graph.edge_index[0]] + node_degrees[graph.edge_index[1]]) / 2
 
-        edges.append((normalized_w, e[0], e[1]))
-    
-    # MST using Kruskal's algorithm
-    mst_edges, non_mst_edges = kruskals(edges)
+    # sort the centrality scores in non-increasing order
+    _, sorted_indices = torch.sort(ec_scores, descending=True)
 
-    # add back non_mst_edges with probabilities equal to their 1 - weights
-    # (ie. lower probability -> should be added with greater liklihood)
-    final_edges = mst_edges
-    for e in non_mst_edges:
-        if random.random() >= e[0]:
-            final_edges.append(e)
-    
-    # transform back into an adjacency matrix
-    perturbed_graph = [[] for _ in range(len(adj_mat))]
+    # sort the edge index as well
+    sorted_edge_index = graph.edge_index[:, sorted_indices]
 
-    for e in final_edges:
-        _, n, n2 = e
-        perturbed_graph[n].append(n2)
+    # keep only the (1-dropout)-portion of edges
+    portion_to_keep = int((1-dropout)*sorted_edge_index.size(1))
 
-        # check if the edge is bidirectional
-        if n in adj_mat[n2]:
-            perturbed_graph[n2].append(n)
-            
-    return perturbed_graph
+    return sorted_edge_index[:, :portion_to_keep]
 
-def graph_to_adj_mat(graph: Data) -> List[List[int]]:
-    '''
-    Converts a PyTorch Geo graph into an adjacency matrix.
-
-    Arguments:
-    graph: a PyTorch Geo graph
-    '''
-
-    adj_mat = [[] for _ in range(graph.x.size(0))]
-
-    for i in range(graph.edge_index.size(1)): # iterate over each edge
-        tail, head = graph.edge_index[:, i]
-        tail, head = int(tail.item()), int(head.item())
-        adj_mat[tail].append(head)
-
-    return adj_mat
-
-def adj_mat_to_graph(x: torch.Tensor, adj_mat: List[List[int]]) -> Data:
-    '''Converts an adjacency matrix into a PyTorch Geo graph.
-
-    Arguments:
-    x: node features tensor
-    adj_mat: an adjacency matrix for the graph
-    '''
-
-    num_edges = sum(len(neighbors) for neighbors in adj_mat)
-    edge_index = torch.zeros(2, num_edges)
-
-    idx = 0
-    for tail, neighbors in enumerate(adj_mat):
-        for head in neighbors:
-            edge_index[0][idx] = tail
-            edge_index[1][idx] = head
-            idx += 1
-
-    return Data(x=x, edge_index=edge_index)
-
-def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]:
+def bfs(start: int, k: int, graph: Data) -> Data:
     '''Returns the subgraph, with a maximum depth of k, centered at 
     some starting node.
 
@@ -252,26 +99,30 @@ def bfs(start: int, k: int, graph: Data) -> Tuple[List[List[int]], torch.Tensor]
             neighbor_idx = int(neighbor.item())
             q.put((neighbor_idx, ply+1))
     
-    subgraph = [[] for _ in range(len(mapping))]
+    edge_index = [[], []]
     for n in mapping:
-        # add neighbors that are ONLY in the `mapping`
         for neighbor in graph.edge_index[1][graph.edge_index[0] == n]:
             neighbor_idx = int(neighbor.item())
             if neighbor_idx in mapping:
-                subgraph[mapping[n]].append(mapping[neighbor_idx])
+                edge_index[0].append(mapping[n])
+                edge_index[1].append(mapping[neighbor_idx])
+    
+    # edge_index
+    edge_index = torch.tensor(edge_index, dtype=torch.long)
 
-    key_lst = sorted(list(mapping.keys()))
-    idxs_float = torch.Tensor(key_lst)
-    idxs_int = idxs_float.to(dtype=torch.int64)
-    return subgraph, graph.x[idxs_int]
+    # features matrix (x)
+    idxs_float = torch.Tensor(sorted(list(mapping.keys())))
+    idxs_long = idxs_float.to(dtype=torch.long)
+
+    subgraph = Data(x=graph.x[idxs_long], edge_index=edge_index)
+    return subgraph
 
 def generate_samples(
         graphs: Dataset,
         k: int,
-        max_subgraphs: int,
-        p_f: float,
-        p_e: float,
-        p_t: float,
+        p_damp: float,
+        p_trunc: float,
+        dropout: float = 0.1,
     ) -> List[Tuple[Data, Data]]:
     '''Generates positive or negative training samples; returns a list of 
     corresponding graphs.
@@ -291,37 +142,32 @@ def generate_samples(
 
         size = g.x.size(0)
         nodes = list(range(size))
-        rand_nodes_pos = random.sample(nodes, min(size, max_subgraphs))
+        rand_nodes_pos = random.sample(nodes, size)
 
         for n in rand_nodes_pos: # positive training samples
-            sub_adj_mat, features = bfs(n, k, g)
 
-            perturbed_sub_adj_mat = perturb_topology(sub_adj_mat, p_e, p_t)
-            perturbed_features = perturb_features(sub_adj_mat, features, p_f, p_t)
+            # get subgraph (k-hop neighborhood around node `n`)
+            subg = bfs(n, k, g)
 
-            data.append(
-                (
-                    adj_mat_to_graph(perturbed_features, perturbed_sub_adj_mat),
-                    adj_mat_to_graph(features, sub_adj_mat)
-                )
-            )
+            # perturb topology and features
+            perturbed_subg_topology = perturb_topology(subg, dropout=dropout)
+            perturbed_subg_features = perturb_features(subg, p_damp, p_trunc)
+            perturbed_subg = Data(x=perturbed_subg_features, edge_index=perturbed_subg_topology)
+
+            # add pair
+            data.append((perturbed_subg, subg))
 
             print(f"Pair {counter}")
             counter += 1
         
-        rand_nodes_neg = random.sample(nodes, min(size, max_subgraphs*2))
+        rand_nodes_neg = random.sample(nodes, size)
         for idx in range(len(rand_nodes_neg)//2): # negative training samples
-            sub_adj_mat, features = bfs(rand_nodes_neg[idx], k, g)
+            subg1 = bfs(rand_nodes_neg[idx], k, g)
 
             idx2 = len(rand_nodes_neg) - 1 - idx
-            sub_adj_mat2, features2 = bfs(rand_nodes_neg[idx2], k, g)
+            subg2 = bfs(rand_nodes_neg[idx2], k, g)
 
-            data.append(
-                (
-                    adj_mat_to_graph(features, sub_adj_mat), 
-                    adj_mat_to_graph(features2, sub_adj_mat2)
-                )
-            )
+            data.append((subg1, subg2))
             
             print(f"Pair {counter}")
             counter += 1

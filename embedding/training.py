@@ -7,7 +7,7 @@ from utils import *
 
 def test_data_loader():
     graphs = WikiCS('../datasets/wikics')
-    pairs = generate_samples(graphs, 1, 200, 0.1, 0.3, 0.7)
+    pairs = generate_samples(graphs, 1, 0.1, 0.7)
 
 def train(args: argparse.ArgumentParser) -> None:
     pass
