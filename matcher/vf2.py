@@ -363,10 +363,8 @@ class GraphMatcher:
         self.cost_map[self.state.depth] += cost
 
         # more tolerant in the first layers
-        # TODO should use cost over total checked edges instead
         return \
-            self.G2.number_of_nodes() * (self.G2.number_of_nodes() - 1) / (self.state.depth * (self.state.depth - 1) +
-                                                                           (self.state.depth != self.G2.number_of_nodes())) \
+            self.G2.number_of_nodes() ** 2 / (self.state.depth ** 2 + (self.state.depth != self.G2.number_of_nodes())) \
             < cost / self.G2.number_of_edges() * self.error_bound
 
 
