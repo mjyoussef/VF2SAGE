@@ -1,13 +1,22 @@
 import argparse
 from typing import Dict, Any
-import torch
 from torch_geometric.datasets import WikiCS
 from utils import *
 
+def load_data_samples(dataset):
+    pass
 
 def test_data_loader():
     graphs = WikiCS('../datasets/wikics')
-    pairs = generate_samples(graphs, 2, 0.1, 0.7)
+    generate_samples(
+        './data/wikics',
+        500,
+        graphs,
+        2,
+        0.1,
+        0.7,
+        dropout=0.1,
+    )
 
 def train(args: argparse.ArgumentParser) -> None:
     pass

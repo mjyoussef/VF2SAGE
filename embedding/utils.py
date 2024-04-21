@@ -38,17 +38,17 @@ def perturb_features(
     probs = ((max_weight - weights) / max_weight) * p_damp
 
     # truncate probabilities to avoid heavy perturbation
-    probs = torch.clamp(probs, p_trunc)
+    probs = torch.clamp(probs, max=p_trunc)
 
     # apply salt and pepper noise
-    mask = torch.randn(graph.x.size()) >= probs
+    mask = torch.rand(graph.x.size()) >= probs
     perturbed_features = graph.x * mask
 
     return perturbed_features
 
 def perturb_topology(
         graph: Data, 
-        dropout=0.1,
+        dropout: float = 0.1,
     ) -> torch.Tensor:
 
     # compute node degrees
@@ -127,13 +127,19 @@ def bfs(
     subgraph = Data(x=features[idxs_long], edge_index=edge_index)
     return subgraph
 
+
+# add an option to resume training progress from a specific state
+# this includes the current graph, a random seed for generating positive
+# and negative samples, and an index for the current sample number
 def generate_samples(
+        directory: str,
+        buffer_size: int,
         graphs: Dataset,
         k: int,
         p_damp: float,
         p_trunc: float,
         dropout: float = 0.1,
-    ) -> List[Tuple[Data, Data]]:
+    ) -> None:
     '''Generates positive or negative training samples; returns a list of 
     corresponding graphs.
     
@@ -145,8 +151,7 @@ def generate_samples(
     p_f, p_e, p_t: hyperparameters for perturbations
     '''
 
-    data = []
-    counter = 0
+    batch_idx = 0
 
     for g in graphs:
         adj_mat = [set() for _ in range(g.x.size(0))]
@@ -154,12 +159,13 @@ def generate_samples(
             tail = g.edge_index[0, i]
             head = g.edge_index[1, i]
             adj_mat[tail].add(head)
-
         
         num_nodes = len(adj_mat)
         nodes = list(range(num_nodes))
         random.shuffle(nodes)
 
+        # pairs that need to be saved
+        positive_batch = []
         for n in nodes:
             
             # get subgraph (k-hop neighborhood around node `n`)
@@ -169,74 +175,64 @@ def generate_samples(
             perturbed_subg_topology = perturb_topology(subg, dropout=dropout)
             perturbed_subg_features = perturb_features(subg, p_damp, p_trunc)
             perturbed_subg = Data(x=perturbed_subg_features, edge_index=perturbed_subg_topology)
+            return
+
+            # NOTE: in the future, we can also neighboring node subgraphs as positive pairs
 
             # add pair
-            data.append((perturbed_subg, subg))
+            positive_batch.append((perturbed_subg, subg))
 
-            print(f"Positive pair: {counter}")
-            counter += 1
+            # if the batch is large enough, save it
+            if (len(positive_batch) >= buffer_size):
+                save_batch(batch_idx, f"{directory}/positive", positive_batch)
+                positive_batch = []
+                batch_idx += 1
+                print(f"Saved positive batch: {batch_idx}")
         
+        # check if there are any positive samples remaining
+        if (len(positive_batch) > 0):
+            save_batch(batch_idx, f"{directory}/positive", positive_batch)
+            positive_batch = []
+            batch_idx += 1
+            print(f"Saved positive batch: {batch_idx}")
+
+        negative_batch = []
         for idx in range(len(nodes)): # negative training samples
             subg1 = bfs(nodes[idx], k, adj_mat, g.x)
 
             idx2 = len(nodes) - 1 - idx
             subg2 = bfs(nodes[idx2], k, adj_mat, g.x)
 
-            data.append((subg1, subg2))
-            
-            print(f"Negative pair: {counter}")
-            counter += 1
+            # add pair
+            negative_batch.append((subg1, subg2))
 
-    return data
-
-def save_data(
-        data: List[Tuple[Data, Data]], 
-        folder: str
-    ) -> None:
-    '''Saves data to the folder.
-    
-    Arguments:
-    data: data
-    folder: folder path
-    '''
-    
-    counter = 0
-    for d1, d2 in data:
-        dir_path = f"{folder}/p-{counter}"
-        counter += 1
-
-        # check if the directory exists
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
+            # if the batch is large enough, save it
+            if (len(negative_batch) >= buffer_size):
+                save_batch(batch_idx, f"{directory}/negative", negative_batch)
+                negative_batch = []
+                batch_idx += 1
+                print(f"Saved negative batch: {batch_idx}")
         
-        # save
-        full_path_d1 = os.path.join(dir_path, 'd1.pt')
-        full_path_d2 = os.path.join(dir_path, 'd2.pt')
-        torch.save(d1, full_path_d1)
-        torch.save(d2, full_path_d2)
+        # check if there are any negative samples remaining
+        if (len(negative_batch) > 0):
+            save_batch(batch_idx, negative_batch, f"{directory}/negative")
+            negative_batch = []
+            batch_idx += 1
+            print(f"Saved negative batch: {batch_idx}")
+
+def save_batch(index, folder, pairs):
+
+    # make the directory if it doesn't exist
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+    
+    full_path = os.path.join(folder, f"batch-{index}")
+
+    # save the pairs
+    torch.save(pairs, full_path)
 
 def read_data(folder: str) -> List[Tuple[Data, Data]]:
-    '''Reads data from the folder.
-    
-    Arguments:
-    folder: folder path
-    '''
-
-    data = []
-    for root, _, files in os.walk(folder):
-        if (root == folder):
-            continue
-        
-        if len(files) != 2:
-            continue
-
-        d1_path = os.path.join(root, files[0])
-        d2_path = os.path.join(root, files[1])
-
-        pair = [torch.load(d1_path), torch.load(d2_path)]
-        data.append(pair)
-    
-    return data
+    pass
 
 def load(
         data: List[Tuple[Data, Data]],
