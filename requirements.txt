@@ -1,8 +1,4 @@
 # use Python 3.6+
 torch
 torch-geometric
-<<<<<<< HEAD
 networkx
-=======
-networkx
->>>>>>> origin
