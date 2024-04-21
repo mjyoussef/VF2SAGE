@@ -1,7 +1,8 @@
 import sys
 import networkx as nx
-import numpy as np
-from typing import Callable, Dict
+from torch import Tensor, nn
+from torch_geometric import data
+from torch_geometric.utils import to_networkx
 
 __all__ = ["GraphMatcher"]
 
@@ -26,11 +27,9 @@ class GraphMatcher:
     """
 
     def __init__(self,
-                 G1: nx.Graph, G2: nx.Graph,
-                 e1: Dict[int, np.ndarray[np.double]], e2: [int, np.ndarray[np.double]],
-                 comparator: Callable[[np.ndarray[np.double], np.ndarray[np.double]], np.double],
-                 error_bound: float, phantom_degree_bound: int,
-                 # TODO the constraint on phantom degrees should be based on the density (or arboricity) of the graph
+                 G1: data.Data, G2: data.Data,
+                 e1: Tensor, e2: Tensor, fv1: Tensor, fv2: Tensor,
+                 feat_error_bound: float, embedding_error_bound: float,
                  ) -> None:
         """Initialize GraphMatcher.
 
@@ -48,16 +47,18 @@ class GraphMatcher:
         >>> G2 = nx.path_graph(4)
         >>> GM = isomorphism.GraphMatcher(G1, G2)
         """
-        self.G1 = G1
-        self.G2 = G2
-        self.G1_nodes = set(G1.nodes())
-        self.G2_nodes = set(G2.nodes())
-        self.G2_node_order = {n: i for i, n in enumerate(G2)}
+        self.G1 = to_networkx(data=G1, to_undirected=True)
+        self.G2 = to_networkx(data=G2, to_undirected=True)
+        self.G1_nodes = set(self.G1.nodes())
+        self.G2_nodes = set(self.G2.nodes())
+        self.G2_node_order = {n: i for i, n in enumerate(self.G2)}
         self.e1 = e1
         self.e2 = e2
-        self.comparator = comparator
-        self.error_bound = error_bound
-        self.phantom_degree_bound = phantom_degree_bound
+        self.fv1 = fv1
+        self.fv2 = fv2
+        self.cosf = nn.CosineSimilarity(dim=0)
+        self.feat_error_bound = feat_error_bound
+        self.embedding_error_bound = embedding_error_bound
 
         # Set recursion limit.
         self.old_recursion_limit = sys.getrecursionlimit()
@@ -105,7 +106,7 @@ class GraphMatcher:
             # checkme: process the valid node pairs with the closest embedding first
             ordered_T1_inout = sorted(
                 T1_inout.copy(),
-                key=lambda u: self.comparator(self.e1[u], self.e2[node_2])
+                key=lambda u: -self.cosf(self.e1[u], self.e2[node_2])
             )
 
             for node_1 in ordered_T1_inout:
@@ -122,7 +123,7 @@ class GraphMatcher:
                 # checkme: process the valid node pairs with the closest embedding first
                 ordered_nodes = sorted(
                     [node for node in self.G1 if node not in self.core_1],
-                    key=lambda node: self.comparator(self.e1[node], self.e2[other_node])
+                    key=lambda node: -self.cosf(self.e1[node], self.e2[other_node])
                 )
 
                 for node in ordered_nodes:
@@ -155,10 +156,6 @@ class GraphMatcher:
         self.inout_1 = {}
         self.inout_2 = {}
         # Practically, these sets simply store the nodes in the subgraph.
-
-        # Used to backtrack cost
-        self.cost_map = {}
-        self.total_cost = 0
 
         self.state = GMState(self)
 
@@ -228,7 +225,9 @@ class GraphMatcher:
         the above form to keep the match() method functional. Implementations
         should consider multigraphs.
         """
-        return True
+
+        # features should be similar enough for the corresponding nodes
+        return self.cosf(self.fv1[G1_node], self.fv2[G2_node]) > 1 - self.feat_error_bound
 
     def subgraph_is_isomorphic(self):
         """Returns True if a subgraph of G1 is isomorphic to G2."""
@@ -283,9 +282,11 @@ class GraphMatcher:
         if self.G1.number_of_edges(G1_node, G1_node) != self.G2.number_of_edges(
             G2_node, G2_node
         ):
-            cost = abs(self.G1.number_of_edges(G1_node, G1_node) - self.G2.number_of_edges(G2_node, G2_node))
-            if not self.update_cost(cost):
-                return False
+            return False
+
+        if self.cosf(self.e1[G1_node], self.e2[G2_node]) > 1 - self.embedding_error_bound:
+            # if two embeddings are similar enough, we assume there is a good much
+            return True
 
         # R_neighbor
 
@@ -294,22 +295,20 @@ class GraphMatcher:
         # edges must be equal.
         for neighbor in self.G1[G1_node]:
             if neighbor in self.core_1:
-                if self.core_1[neighbor] not in self.G2[G2_node]:   # test on mapped nodes
-                    cost = self.G1.number_of_edges(neighbor, G1_node)
-                else:
-                    cost = abs(self.G1.number_of_edges(neighbor, G1_node) - self.G2.number_of_edges(self.core_1[neighbor], G2_node))
-
-                if not self.update_cost(cost):
+                if self.core_1[neighbor] not in self.G2[G2_node]:
+                    return False
+                elif self.G1.number_of_edges(
+                    neighbor, G1_node
+                ) != self.G2.number_of_edges(self.core_1[neighbor], G2_node):
                     return False
 
         for neighbor in self.G2[G2_node]:
             if neighbor in self.core_2:
                 if self.core_2[neighbor] not in self.G1[G1_node]:
-                    cost = self.G2.number_of_edges(neighbor, G2_node)
-                else:
-                    cost = abs(self.G1.number_of_edges(self.core_2[neighbor], G1_node) - self.G2.number_of_edges(neighbor, G2_node))
-
-                if not self.update_cost(cost):
+                    return False
+                elif self.G1.number_of_edges(
+                    self.core_2[neighbor], G1_node
+                ) != self.G2.number_of_edges(neighbor, G2_node):
                     return False
 
         # Look ahead 1
@@ -326,11 +325,7 @@ class GraphMatcher:
             if (neighbor in self.inout_2) and (neighbor not in self.core_2):
                 num2 += 1
 
-        # checkme: the look-aheads are essentially degree-based pruning and I feel we should handle them separately
-        # - to avoid double counting
-        # - enable us to short-circuit it more aggressively
-        # (the assumption here is that a good approximation is unlikely to have much more extra edges)
-        if not (num1 >= num2 + self.phantom_degree_bound):
+        if not (num1 >= num2):
             return False
 
         # Look ahead 2
@@ -349,23 +344,11 @@ class GraphMatcher:
             if neighbor not in self.inout_2:
                 num2 += 1
 
-        if not (num1 >= num2 + self.phantom_degree_bound):
+        if not (num1 >= num2):
             return False
 
         # Otherwise, this node pair is syntactically feasible!
         return True
-
-    def update_cost(self, cost: int) -> bool:   # checkme: heuristic on staged cost
-        if cost == 0:
-            return True
-
-        self.total_cost += cost
-        self.cost_map[self.state.depth] += cost
-
-        # more tolerant in the first layers
-        return \
-            self.G2.number_of_nodes() ** 2 / (self.state.depth ** 2 + (self.state.depth != self.G2.number_of_nodes())) \
-            < cost / self.G2.number_of_edges() * self.error_bound
 
 
 class GMState:
@@ -397,8 +380,6 @@ class GMState:
             GM.core_2 = {}
             GM.inout_1 = {}
             GM.inout_2 = {}
-            GM.cost_map = {}
-            GM.total_cost = 0
 
         # Watch out! G1_node == 0 should evaluate to True.
         if G1_node is not None and G2_node is not None:
@@ -413,7 +394,6 @@ class GMState:
             # Now we must update the other two vectors.
             # We will add only if it is not in there already!
             self.depth = len(GM.core_1)
-            GM.cost_map[self.depth] = 0
 
             # First we add the new nodes...
             if G1_node not in GM.inout_1:
@@ -450,10 +430,6 @@ class GMState:
         if self.G1_node is not None and self.G2_node is not None:
             del self.GM.core_1[self.G1_node]
             del self.GM.core_2[self.G2_node]
-
-        # revert the cost in this level
-        self.GM.total_cost -= self.GM.cost_map[self.depth]
-        del self.GM.cost_map[self.depth]
 
         # Now we revert the other two vectors.
         # Thus, we delete all entries which have this depth level.
