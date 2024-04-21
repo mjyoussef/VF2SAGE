@@ -9,13 +9,16 @@ def wikics(args):
     dropout = args.dropout
 
     # set optional parameters
-    if (p_damp is not None):
+    if (p_damp is None):
         p_damp = 0.1
     
-    if (p_trunc is not None):
+    if (p_trunc is None):
         p_trunc = 0.7
     
+    print(k, p_damp, p_trunc, dropout)
+    
     graphs = WikiCS('../datasets/wikics')
+    print(graphs)
 
     generate_samples(
         "./data/wikics",
@@ -23,7 +26,7 @@ def wikics(args):
         k,
         p_damp,
         p_trunc,
-        dropout
+        dropout=dropout
     )
 
 def amazon_photo(args):
@@ -33,10 +36,10 @@ def amazon_photo(args):
     dropout = args.dropout
 
     # set optional parameters
-    if (p_damp is not None):
+    if (p_damp is None):
         p_damp = 0.1
     
-    if (p_trunc is not None):
+    if (p_trunc is None):
         p_trunc = 0.7
     
     graphs = Amazon('../datasets/amazon_photo', 'photo')
@@ -47,7 +50,7 @@ def amazon_photo(args):
         k,
         p_damp,
         p_trunc,
-        dropout
+        dropout=dropout
     )
 
 def coauthor_cs(args):
@@ -57,10 +60,10 @@ def coauthor_cs(args):
     dropout = args.dropout
 
     # set optional parameters
-    if (p_damp is not None):
+    if (p_damp is None):
         p_damp = 0.35
     
-    if (p_trunc is not None):
+    if (p_trunc is None):
         p_trunc = 0.7
     
     graphs = Coauthor('../datasets/coauthor_cs', 'CS')
@@ -71,7 +74,7 @@ def coauthor_cs(args):
         k,
         p_damp,
         p_trunc,
-        dropout
+        dropout=dropout
     )
 
 if __name__ == '__main__':
