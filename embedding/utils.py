@@ -1,6 +1,6 @@
 import torch
 from typing import Tuple, List, Optional, Set
-from torch_geometric.utils import degree
+from torch_geometric.utils import degree, k_hop_subgraph
 from torch_geometric.data import Dataset, Data
 from torch_geometric.loader import DataLoader
 import os
@@ -74,7 +74,7 @@ def bfs(
         k: int, 
         adj_mat: List[Set[int]], 
         features: torch.Tensor, 
-        p: float = 0.2,
+        p: float = 0.15,
         min_edges: int = 10,
     ) -> Data:
     '''Returns the subgraph, with a maximum depth of k, centered at 
@@ -127,13 +127,11 @@ def bfs(
     subgraph = Data(x=features[idxs_long], edge_index=edge_index)
     return subgraph
 
-
 # add an option to resume training progress from a specific state
 # this includes the current graph, a random seed for generating positive
 # and negative samples, and an index for the current sample number
 def generate_samples(
         directory: str,
-        buffer_size: int,
         graphs: Dataset,
         k: int,
         p_damp: float,
@@ -151,74 +149,93 @@ def generate_samples(
     p_f, p_e, p_t: hyperparameters for perturbations
     '''
 
-    batch_idx = 0
+    counter = 0
 
-    for g in graphs:
-        adj_mat = [set() for _ in range(g.x.size(0))]
-        for i in range(g.edge_index.shape[1]):
-            tail = g.edge_index[0, i]
-            head = g.edge_index[1, i]
-            adj_mat[tail].add(head)
-        
-        num_nodes = len(adj_mat)
+    for i, g in enumerate(graphs):
+        num_nodes = g.x.shape[0]
         nodes = list(range(num_nodes))
         random.shuffle(nodes)
 
-        # pairs that need to be saved
-        positive_batch = []
+        # positive pairs that need to be saved
+        positive_data = []
         for n in nodes:
             
             # get subgraph (k-hop neighborhood around node `n`)
-            subg = bfs(n, k, adj_mat, g.x)
+            subgraph_nodes, subgraph_edge_index, _, _ = k_hop_subgraph(
+                node_idx=n, 
+                num_hops=k, 
+                edge_index=g.edge_index, 
+                relabel_nodes=True, 
+                num_nodes=g.num_nodes
+            )
+
+            # create a data object for the subgraph
+            subgraph = Data(
+                x=g.x[subgraph_nodes],
+                edge_index=subgraph_edge_index,
+            )
 
             # perturb topology and features
-            perturbed_subg_topology = perturb_topology(subg, dropout=dropout)
-            perturbed_subg_features = perturb_features(subg, p_damp, p_trunc)
-            perturbed_subg = Data(x=perturbed_subg_features, edge_index=perturbed_subg_topology)
-            return
+            perturbed_subg_topology = perturb_topology(subgraph, dropout=dropout)
+            perturbed_subg_features = perturb_features(subgraph, p_damp, p_trunc)
 
-            # NOTE: in the future, we can also neighboring node subgraphs as positive pairs
+            # create the data object for the perturbed subgraph
+            perturbed_subgraph = Data(x=perturbed_subg_features, edge_index=perturbed_subg_topology)
 
             # add pair
-            positive_batch.append((perturbed_subg, subg))
+            positive_data.append((perturbed_subgraph, subgraph))
 
-            # if the batch is large enough, save it
-            if (len(positive_batch) >= buffer_size):
-                save_batch(batch_idx, f"{directory}/positive", positive_batch)
-                positive_batch = []
-                batch_idx += 1
-                print(f"Saved positive batch: {batch_idx}")
+            # logging
+            print(counter)
+            counter += 1
         
-        # check if there are any positive samples remaining
-        if (len(positive_batch) > 0):
-            save_batch(batch_idx, f"{directory}/positive", positive_batch)
-            positive_batch = []
-            batch_idx += 1
-            print(f"Saved positive batch: {batch_idx}")
+        # save the positive pairs
+        save_batch(i, f"{directory}/positive", positive_data)
+        del positive_data
 
-        negative_batch = []
+        # negative pairs that need to be saved
+        negative_data = []
         for idx in range(len(nodes)): # negative training samples
-            subg1 = bfs(nodes[idx], k, adj_mat, g.x)
+            # get subgraph1 (k-hop neighborhood)
+            subgraph_nodes, subgraph_edge_index, _, _ = k_hop_subgraph(
+                node_idx=nodes[idx], 
+                num_hops=k, 
+                edge_index=g.edge_index, 
+                relabel_nodes=True, 
+                num_nodes=g.num_nodes
+            )
 
-            idx2 = len(nodes) - 1 - idx
-            subg2 = bfs(nodes[idx2], k, adj_mat, g.x)
+            # create a data object for the subgraph1
+            subgraph1 = Data(
+                x=g.x[subgraph_nodes],
+                edge_index=subgraph_edge_index,
+            )
+
+            # get subgraph2 (k-hop neighborhood)
+            subgraph_nodes, subgraph_edge_index, _, _ = k_hop_subgraph(
+                node_idx=nodes[len(nodes) - 1 - idx], 
+                num_hops=k, 
+                edge_index=g.edge_index, 
+                relabel_nodes=True, 
+                num_nodes=g.num_nodes
+            )
+
+            # create a data object for the subgraph
+            subgraph2 = Data(
+                x=g.x[subgraph_nodes],
+                edge_index=subgraph_edge_index,
+            )
 
             # add pair
-            negative_batch.append((subg1, subg2))
+            negative_data.append((subgraph1, subgraph2))
 
-            # if the batch is large enough, save it
-            if (len(negative_batch) >= buffer_size):
-                save_batch(batch_idx, f"{directory}/negative", negative_batch)
-                negative_batch = []
-                batch_idx += 1
-                print(f"Saved negative batch: {batch_idx}")
+            # logging
+            print(counter)
+            counter += 1
         
-        # check if there are any negative samples remaining
-        if (len(negative_batch) > 0):
-            save_batch(batch_idx, negative_batch, f"{directory}/negative")
-            negative_batch = []
-            batch_idx += 1
-            print(f"Saved negative batch: {batch_idx}")
+        # save the negative pairs
+        save_batch(i, f"{directory}/negative", negative_data)
+        del negative_data
 
 def save_batch(index, folder, pairs):
 
@@ -232,6 +249,8 @@ def save_batch(index, folder, pairs):
     torch.save(pairs, full_path)
 
 def read_data(folder: str) -> List[Tuple[Data, Data]]:
+
+    # read the positive 
     pass
 
 def load(

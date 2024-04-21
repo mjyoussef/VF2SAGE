@@ -10,7 +10,6 @@ def test_data_loader():
     graphs = WikiCS('../datasets/wikics')
     generate_samples(
         './data/wikics',
-        500,
         graphs,
         2,
         0.1,
