@@ -69,64 +69,6 @@ def perturb_topology(
 
     return sorted_edge_index[:, :portion_to_keep]
 
-def bfs(
-        start: int, 
-        k: int, 
-        adj_mat: List[Set[int]], 
-        features: torch.Tensor, 
-        p: float = 0.15,
-        min_edges: int = 10,
-    ) -> Data:
-    '''Returns the subgraph, with a maximum depth of k, centered at 
-    some starting node.
-
-    Arguments:
-    start: the starting node
-    k: maximum depth
-    graph: a PyTorch Geo graph
-    '''
-
-    q = Queue()
-    mapping = dict()
-    counter = 0
-    q.put((start, 0))
-
-    # find all nodes in the k-hop neighborhood of `start`
-    while q.qsize() > 0:
-        n, ply = q.get()
-
-        if n in mapping or ply > k:
-            continue
-
-        mapping[n] = counter
-        counter += 1
-
-        neighbors = list(adj_mat[n])
-        truncated_neighbors = neighbors
-        if len(neighbors) > min_edges:
-            truncated_neighbors = neighbors[:int(p*len(neighbors))]
-        
-        for neighbor in truncated_neighbors:
-            q.put((neighbor, ply+1))
-    
-    edge_index = [[], []]
-    for n in mapping:
-        for neighbor in adj_mat[n]:
-            if neighbor not in mapping:
-                continue
-            edge_index[0].append(mapping[n])
-            edge_index[1].append(mapping[neighbor])
-    
-    # edge_index
-    edge_index = torch.tensor(edge_index, dtype=torch.long)
-
-    # features matrix (x)
-    idxs_float = torch.Tensor(sorted(list(mapping.keys())))
-    idxs_long = idxs_float.to(dtype=torch.long)
-
-    subgraph = Data(x=features[idxs_long], edge_index=edge_index)
-    return subgraph
-
 # add an option to resume training progress from a specific state
 # this includes the current graph, a random seed for generating positive
 # and negative samples, and an index for the current sample number
