@@ -1,4 +1,11 @@
+<<<<<<< HEAD
 /embedding/data
+=======
+.idea/
+bin/
+pyvenv.cfg
+
+>>>>>>> origin
 datasets/
 # Byte-compiled / optimized / DLL files
 __pycache__/
