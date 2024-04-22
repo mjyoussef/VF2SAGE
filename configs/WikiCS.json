@@ -1,0 +1,14 @@
+{
+    "k": 2,
+    "p_damp": 0.1,
+    "p_trunc": 0.7,
+    "dropout": 0.1,
+    "hidden_dimension": 256,
+    "out_dimension": 256,
+    "margin": 1.0,
+    "lr": 0.001,
+    "batch_size": 48,
+    "epochs": 50,
+    "train_split": 0.7,
+    "val_split": 0.15
+}
