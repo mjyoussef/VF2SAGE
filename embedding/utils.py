@@ -1,11 +1,8 @@
 import torch
-from typing import Tuple, List, Optional, Set
-from torch_geometric.utils import degree, k_hop_subgraph
+from torch_geometric.utils import degree, k_hop_subgraph, to_dense_adj
 from torch_geometric.data import Dataset, Data
-from torch_geometric.loader import DataLoader
-import os
-import random
-from queue import Queue
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset
 
 def perturb_features(
         graph: Data,
@@ -48,7 +45,7 @@ def perturb_features(
 
 def perturb_topology(
         graph: Data, 
-        dropout: float = 0.1,
+        dropout: float = 0.2,
     ) -> torch.Tensor:
 
     # compute node degrees
@@ -69,43 +66,63 @@ def perturb_topology(
 
     return sorted_edge_index[:, :portion_to_keep]
 
-# add an option to resume training progress from a specific state
-# this includes the current graph, a random seed for generating positive
-# and negative samples, and an index for the current sample number
-def generate_samples(
-        directory: str,
-        graphs: Dataset,
-        k: int,
-        p_damp: float,
-        p_trunc: float,
-        dropout: float = 0.1,
-    ) -> None:
-    '''Generates positive or negative training samples; returns a list of 
-    corresponding graphs.
+class GraphPairsDataset(Dataset):
+    def __init__(self, graphs, k, p_damp, p_trunc, dropout):
+        self.k = k
+        self.p_damp = p_damp
+        self.p_trunc = p_trunc
+        self.dropout = dropout
+        self.graphs = graphs
+
+        # preprocess to get positive and negative samples
+
+        # positive pair is identified by tuple
+        # consisting of True, graph idx, node idx
+        positive = set()
+        for g_idx, g in enumerate(graphs):
+            for node_idx in range(g.num_nodes):
+                positive.add((True, g_idx, node_idx))
+
+        # negative pair is identified by tuple
+        # consisting of False, graph idx, (node1 idx, node2 idx)
+        negative = set()
+        for g_idx, g in enumerate(graphs):
+            g_adj_mat = to_dense_adj(g.edge_index)[0]
+            g_adj_mat.fill_diagonal_(1)
+
+            # compute g_adj_mat^k;
+            # any node that is in the k-hop neighborhood of another node will be
+            # in its neighborhood in the k_hop_adj_mat
+            k_hop_adj_mat = g_adj_mat.clone()
+            for _ in range(1, k):
+                k_hop_adj_mat = torch.matmul(k_hop_adj_mat, g_adj_mat)
+
+            # add non-neighboring nodes (w.r.t k_hop_adj_mat) as negative pairs
+            for node_idx in range(g.num_nodes):
+                non_neighbors = torch.nonzero(k_hop_adj_mat[node_idx] == 0, as_tuple=False).squeeze()
+                picked = non_neighbors[torch.randperm(len(non_neighbors))[:1]]
+                for non_neighbor_idx in picked:
+                    negative.add((False, g_idx, tuple(sorted([node_idx, non_neighbor_idx]))))
+        
+        # merge the positive and negative pairs
+        self.samples = list(positive + negative)
     
-    Arguments:
-    graphs: original dataset of graphs
-    k: maximum depth of subgraph training samples
-    max_subgraphs: max number of subgraphs to sample from each graph (for 
-    positive and negative training samples)
-    p_f, p_e, p_t: hyperparameters for perturbations
-    '''
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
 
-    counter = 0
+        # positive pair
+        if (sample[0]):
+            g_idx = sample[1]
+            g = self.graphs[g_idx]
+            n_idx = sample[2]
 
-    for i, g in enumerate(graphs):
-        num_nodes = g.x.shape[0]
-        nodes = list(range(num_nodes))
-        random.shuffle(nodes)
-
-        # positive pairs that need to be saved
-        positive_data = []
-        for n in nodes:
-            
             # get subgraph (k-hop neighborhood around node `n`)
             subgraph_nodes, subgraph_edge_index, _, _ = k_hop_subgraph(
-                node_idx=n, 
-                num_hops=k, 
+                node_idx=n_idx, 
+                num_hops=self.k, 
                 edge_index=g.edge_index, 
                 relabel_nodes=True, 
                 num_nodes=g.num_nodes
@@ -117,110 +134,74 @@ def generate_samples(
                 edge_index=subgraph_edge_index,
             )
 
-            # perturb topology and features
-            perturbed_subg_topology = perturb_topology(subgraph, dropout=dropout)
-            perturbed_subg_features = perturb_features(subgraph, p_damp, p_trunc)
-
-            # create the data object for the perturbed subgraph
+            # get the perturbed graph
+            perturbed_subg_topology = perturb_topology(subgraph, dropout=self.dropout)
+            perturbed_subg_features = perturb_features(subgraph, self.p_damp, self.p_trunc)
             perturbed_subgraph = Data(x=perturbed_subg_features, edge_index=perturbed_subg_topology)
 
-            # add pair
-            positive_data.append((perturbed_subgraph, subgraph))
+            return (subgraph, perturbed_subgraph), 1
+        else:
+            g_idx = sample[1]
+            g = self.graphs[g_idx]
+            n1_idx = sample[2][0]
+            n2_idx = sample[2][1]
 
-            # logging
-            print(counter)
-            counter += 1
-        
-        # save the positive pairs
-        save_batch(i, f"{directory}/positive", positive_data)
-        del positive_data
-
-        # negative pairs that need to be saved
-        negative_data = []
-        for idx in range(len(nodes)): # negative training samples
-            # get subgraph1 (k-hop neighborhood)
+            # subgraph 1
             subgraph_nodes, subgraph_edge_index, _, _ = k_hop_subgraph(
-                node_idx=nodes[idx], 
-                num_hops=k, 
+                node_idx=n1_idx, 
+                num_hops=self.k, 
                 edge_index=g.edge_index, 
                 relabel_nodes=True, 
                 num_nodes=g.num_nodes
             )
-
-            # create a data object for the subgraph1
             subgraph1 = Data(
                 x=g.x[subgraph_nodes],
                 edge_index=subgraph_edge_index,
             )
 
-            # get subgraph2 (k-hop neighborhood)
+            # subgraph 2
             subgraph_nodes, subgraph_edge_index, _, _ = k_hop_subgraph(
-                node_idx=nodes[len(nodes) - 1 - idx], 
-                num_hops=k, 
+                node_idx=n2_idx, 
+                num_hops=self.k, 
                 edge_index=g.edge_index, 
                 relabel_nodes=True, 
                 num_nodes=g.num_nodes
             )
-
-            # create a data object for the subgraph
             subgraph2 = Data(
                 x=g.x[subgraph_nodes],
                 edge_index=subgraph_edge_index,
             )
 
-            # add pair
-            negative_data.append((subgraph1, subgraph2))
+            return (subgraph1, subgraph2), 0
 
-            # logging
-            print(counter)
-            counter += 1
-        
-        # save the negative pairs
-        save_batch(i, f"{directory}/negative", negative_data)
-        del negative_data
+def create_loaders(dataset, train_split, val_split, batch_size):
+    # training, validation, and test dataset indices
+    train_split_idx = int(train_split * len(dataset))
+    val_split_idx = train_split_idx + int((val_split * len(dataset)))
 
-def save_batch(index, folder, pairs):
+    indices = torch.randperm(len(dataset))
+    train_indices = indices[:train_split_idx]
+    val_indices = indices[train_split_idx:val_split_idx]
+    test_indices = indices[val_split_idx:]
 
-    # make the directory if it doesn't exist
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-    
-    full_path = os.path.join(folder, f"batch-{index}")
+    # create the dataset subsets (note: this doesn't actually load the 
+    # graphs)
+    train_dataset = Subset(dataset, train_indices)
+    val_dataset = Subset(dataset, val_indices)
+    test_dataset = Subset(dataset, test_indices)
 
-    # save the pairs
-    torch.save(pairs, full_path)
-
-def read_data(folder: str) -> List[Tuple[Data, Data]]:
-
-    # read the positive 
-    pass
-
-def load(
-        data: List[Tuple[Data, Data]],
-        train_split: float,
-        val_split: float,
-        bs: int,
-        shuffle: Optional[bool] = True
-    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    '''Returns dataloaders for training, validation, and test datasets.
-    
-    Arguments:
-    data: a list of corresponding subgraphs
-    train_split: portion of data to allocate for training
-    val_split: portion of data to allocate for validation
-    bs: batch size
-    shuffles: whether to shuffle the data
-    '''
-
-    if shuffle:
-        random.shuffle(data)
-
-    size = len(data)
-    train_idx = int(train_split*size)
-    val_idx = train_idx + int(val_split*size)
-
-    train_loader = DataLoader(data[0:train_idx], batch_size=bs, shuffle=False)
-    val_loader = DataLoader(data[train_idx:val_idx], batch_size=bs, shuffle=False)
-    test_loader = DataLoader(data[val_idx:], batch_size=bs, shuffle=False)
+    # create the dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=4)
 
     return train_loader, val_loader, test_loader
+
+def contrastive_loss(out1, out2, labels, margin=1.0):
+    distances = F.pairwise_distance(out1, out2)
+
+    positive_loss = labels * distances.pow(2)
+    negative_loss = (1 - labels) * F.relu(margin - distances).pow(2)
+
+    loss = 0.5 * torch.mean(positive_loss + negative_loss)
+    return loss

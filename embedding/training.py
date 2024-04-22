@@ -1,24 +1,34 @@
 import argparse
 from typing import Dict, Any
-from torch_geometric.datasets import WikiCS
+from torch.utils.data import Dataset, DataLoader
+from torch_geometric.data.data import BaseData
+from torch_geometric.data.dataset import Dataset
+from torch_geometric.datasets import WikiCS, Amazon, Coauthor
 from utils import *
 
-def load_data_samples(dataset):
-    pass
-
-def test_data_loader():
-    graphs = WikiCS('../datasets/wikics')
-    generate_samples(
-        './data/wikics',
-        graphs,
-        2,
-        0.1,
-        0.7,
-        dropout=0.1,
-    )
-
 def train(args: argparse.ArgumentParser) -> None:
-    pass
+    # load in the graphs depending on the dataset
+    graphs = []
+    if (args.dataset == 'WikiCS'):
+        graphs = WikiCS('../datasets/wikics')
+    elif (args.dataset == 'AmazonPhoto'):
+        graphs = Amazon('../datasets/amazon_photo', 'photo')
+    else:
+        graphs = Coauthor('../datasets/coauthor_cs', 'CS')
+    
+    obj = GraphPairsDataset(graphs, 2)
+
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -54,9 +64,7 @@ if __name__ == '__main__':
     
     '''
 
-    test_data_loader()
-
-    # parser.add_argument('--dataset', type=str, required=True, choices=['WikiCS', 'AmazonPhoto', 'CoauthorCS'])
+    parser.add_argument('--dataset', type=str, required=True, choices=['WikiCS', 'AmazonPhoto', 'CoauthorCS'])
     # parser.add_argument('--k', type=int, required=True)
     # parser.add_argument('--p_f', type=float, required=True)
     # parser.add_argument('--p_e', type=float, required=True)
@@ -69,6 +77,6 @@ if __name__ == '__main__':
     # parser.add_argument('--bs', type=int, required=True)
     # parser.add_argument('--logging', type=bool, required=True)
 
-    # args = parser.parse_args()
+    args = parser.parse_args()
 
-    # train(args.dataset)
+    train(args)
